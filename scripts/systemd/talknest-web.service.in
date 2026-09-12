@@ -1,0 +1,25 @@
+[Unit]
+Description=talknest orchestrator (web UI and WebSocket)
+# Wants= pulls the whole chain (llm -> asr, tts) when the orchestrator is
+# started on its own. Wants rather than Requires because the orchestrator
+# stays useful (it reports backend errors per request) even while a
+# backend is down, and stopping the LLM must not stop the orchestrator.
+Wants=talknest-llm.service
+After=talknest-llm.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@REPO_ROOT@/scripts/start_web.sh
+# The scheme is baked in at install time to mirror start_web.sh's TLS
+# choice; re-run install.sh after changing TLS setup or TALKNEST_PORT.
+# -k because the dev certificate is self-signed.
+ExecStartPost=/bin/sh -c 'until @CURL@ -kfsS --max-time 3 @WEB_HEALTH_URL@ >/dev/null 2>&1; do sleep 2; done'
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

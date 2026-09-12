@@ -1,0 +1,9 @@
+venv*/
+__pycache__/
+*.pyc
+*.log
+.env
+# Machine-local paths and GPU sizing; see local.env.example
+local.env
+.claude/
+certs/

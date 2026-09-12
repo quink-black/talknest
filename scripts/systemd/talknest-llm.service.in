@@ -1,0 +1,24 @@
+[Unit]
+Description=talknest LLM (llama.cpp Qwen3.5-9B) on port 9999
+# Requires= + After=: never activate while ASR or TTS is still starting
+# or has failed -- llama.cpp -fit sizes the offload to whatever VRAM is
+# free at its own startup and would otherwise grab the whole card. A
+# later crash of ASR/TTS is NOT propagated (only explicit stop is), so
+# their Restart=on-failure heals them without touching this unit; an
+# explicit stop of ASR or TTS does stop this unit too.
+Requires=talknest-asr.service talknest-tts.service
+After=talknest-asr.service talknest-tts.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@REPO_ROOT@/server/services/start_llm_llamacpp_9b.sh
+ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:9999/health >/dev/null 2>&1; do sleep 2; done'
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

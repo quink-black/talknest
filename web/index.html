@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talknest</title>
+<style>
+  :root { font-family: system-ui, sans-serif; }
+  body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; background: #faf9f6; color: #222; }
+  header { display: flex; align-items: center; gap: .75rem; }
+  h1 { font-size: 1.3rem; margin: 0 auto 0 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; }
+  .dot.idle { background: #3a3; }
+  .dot.busy { background: #e8a13a; }
+  .controls { display: flex; gap: .6rem; align-items: center; margin: 1rem 0; }
+  select, button { font-size: 1rem; padding: .5rem .9rem; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+  #startBtn { display: none; flex: 1; padding: 1.2rem; font-size: 1.2rem; background: #e8a13a; color: #fff; border-color: #d8922b; }
+  #transcript { display: flex; flex-direction: column; gap: .5rem; max-height: 45vh; overflow-y: auto;
+                background: #fff; border: 1px solid #e2e0da; border-radius: 10px; padding: 1rem; min-height: 240px; }
+  .bubble { max-width: 85%; padding: .55rem .8rem; border-radius: 12px; white-space: pre-wrap; }
+  .bubble.user { align-self: flex-end; background: #d7e8f7; }
+  .bubble.reply { align-self: flex-start; background: #efece4; }
+  table { border-collapse: collapse; margin-top: 1rem; font-size: .85rem; }
+  th, td { border: 1px solid #ddd; padding: .3rem .6rem; text-align: right; }
+  .hint { color: #888; font-size: .85rem; }
+  #banner { display: none; background: #fdf3d7; border: 1px solid #e5c55b;
+            border-radius: 8px; padding: .7rem 1rem; margin: 1rem 0;
+            font-size: .9rem; line-height: 1.5; }
+  #banner code { background: #f4e9bf; padding: 0 .3em; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Talknest</h1>
+  <span class="dot idle" id="statusDot"></span>
+  <span id="status">disconnected</span>
+</header>
+
+<div id="banner"></div>
+
+<div class="controls">
+  <!-- Fallback options; app.js replaces them from GET /modes. -->
+  <select id="mode">
+    <option value="kid">儿童 (7-10岁)</option>
+    <option value="kid_upper">儿童 (10-12岁)</option>
+    <option value="adult">成人</option>
+  </select>
+  <button id="interruptBtn">停下</button>
+  <button id="pauseBtn">暂停</button>
+</div>
+
+<button id="startBtn">点我开始对话</button>
+
+<div id="transcript"></div>
+<p class="hint">麦克风常开：直接对着麦克风说话就行，说完停顿一下会自动接话；
+对方说话时也可以直接插话打断。麦克风依赖安全上下文，局域网 IP 走纯 HTTP 时
+需要通过浏览器 flag 或 TLS 放行。</p>
+
+<table>
+  <thead><tr><th>ASR done</th><th>First audio</th></tr></thead>
+  <tbody id="marksBody"></tbody>
+</table>
+
+<script src="app.js"></script>
+</body>
+</html>

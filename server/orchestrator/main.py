@@ -1,0 +1,365 @@
+"""Talknest orchestrator: WebSocket free-talk voice pipeline.
+
+Flow: the client streams microphone PCM continuously, a streaming VAD cuts
+it into turns, and each turn runs ASR -> LLM stream -> sentence split ->
+TTS -> PCM frames back to the client. Nobody signals the start or end of a
+sentence: speaking over the assistant cuts it off (barge-in) and starts the
+next turn.
+
+The LLM backend (llama.cpp or vLLM) is whatever llm.active points at in
+config.yaml — this file has no backend branches.
+"""
+
+import asyncio
+import contextlib
+import json
+import pathlib
+import re
+import time
+
+import numpy as np
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from starlette.websockets import WebSocketState
+
+from .asr import ASRClient
+from .config import load
+from .llm import LLMClient
+from .tts import TTSError, TTSClient
+from .vad import SileroVAD, StreamVAD
+
+cfg = load()
+app = FastAPI(title="talknest-orchestrator")
+
+llm = LLMClient(
+    cfg["llm"]["profiles"][cfg["llm"]["active"]]["base_url"],
+    cfg["llm"]["profiles"][cfg["llm"]["active"]]["model"],
+    cfg["llm"]["profiles"][cfg["llm"]["active"]].get("api_key", ""),
+    cfg["llm"].get("sampling", {}),
+)
+asr = ASRClient(cfg["asr"]["base_url"], cfg["asr"]["model"])
+tts = TTSClient(cfg["tts"]["base_url"], cfg["tts"]["model"], cfg["tts"]["voice"])
+
+SENTENCE_MIN_CHARS = 24
+CLIENT_SR = 24000  # browser captures at 24 kHz: Qwen3-ASR's native rate
+# (16 kHz input makes Qwen3-ASR fail; 24 kHz matches the Qwen3-Omni
+# audio frontend. VAD runs on an internal 16 kHz copy.)
+# Strip any reasoning that leaks despite non-thinking mode.
+THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
+SENT_END = re.compile(r"[.!?…。！？；;]|(?:\n)")
+# Markdown symbols the LLM may emit (bold, italics, code ticks); the TTS
+# reads them literally or mispronounces the surrounding word.
+MD_SYMBOLS_RE = re.compile(r"[*_`#>~\[\]]+")
+
+VAD_CFG = cfg["vad"]
+BARGE_IN_MS = VAD_CFG.get("barge_in_ms", 400)
+BARGE_IN_GRACE_MS = VAD_CFG.get("playback_grace_ms", 300)
+BARGE_IN_THRESHOLD = VAD_CFG.get("barge_in_threshold", 0.75)
+
+# Fallback chain: configured default, else the first configured mode.
+DEFAULT_MODE = cfg.get("default_mode", "")
+if DEFAULT_MODE not in cfg["modes"]:
+    DEFAULT_MODE = next(iter(cfg["modes"]))
+
+web_dir = str(pathlib.Path(__file__).resolve().parent.parent.parent / "web")
+# Mounted after the /ws route is registered (see bottom of this file) so
+# the catch-all static mount cannot shadow it.
+
+
+def now_ms(t0: float) -> int:
+    return round((time.perf_counter() - t0) * 1000)
+
+
+async def send_json(ws: WebSocket, obj: dict):
+    if ws.client_state == WebSocketState.CONNECTED:
+        await ws.send_text(json.dumps(obj, ensure_ascii=False))
+
+
+def extract_sentences(text: str, start: int):
+    """Split text[start:] into TTS-sized chunks at sentence punctuation.
+
+    A chunk is emitted once it reaches SENTENCE_MIN_CHARS; a run of short
+    sentences merges into the following chunk instead of being emitted
+    (or, at end of stream, flushed whole by the caller). Returns
+    (chunks, new_start).
+    """
+    out = []
+    pos = start
+    m = SENT_END.search(text, pos)
+    while m:
+        if m.end() - start >= SENTENCE_MIN_CHARS:
+            s = text[start : m.end()].strip()
+            start = m.end()
+            if s:
+                out.append(s)
+        pos = m.end()
+        m = SENT_END.search(text, pos)
+    return out, start
+
+
+def barge_in_due(speaking: bool, active: bool, barged: bool,
+                 speech_ms: float, played_ms: float) -> bool:
+    """Whether voiced speech is a child cutting in rather than echo.
+
+    Assistant audio reaches the mic even with echo cancellation on, so
+    speech heard while playing must both outlast the playback lead-in and
+    run long enough to be a real interruption.
+    """
+    return (speaking and active and not barged
+            and played_ms >= BARGE_IN_GRACE_MS
+            and speech_ms >= BARGE_IN_MS)
+
+
+class Session:
+    def __init__(self):
+        self.mode = DEFAULT_MODE
+        self.history: list[dict] = []
+        self.q: asyncio.Queue = asyncio.Queue()
+        self.streaming = False
+        # Silero keeps LSTM state, so each session owns its own VAD.
+        self.svad = StreamVAD(
+            SileroVAD(threshold=VAD_CFG.get("threshold", 0.5)),
+            pre_roll_ms=VAD_CFG.get("pre_roll_ms", 300),
+            silence_ms=VAD_CFG.get("silence_ms", 700),
+            start_ms=VAD_CFG.get("start_ms", 120),
+            min_speech_ms=VAD_CFG.get("min_speech_ms", 300),
+            max_speech_ms=VAD_CFG.get("max_speech_ms", 20000),
+            client_sr=CLIENT_SR,
+        )
+        self.vad_task: asyncio.Task | None = None
+        self.turn_task: asyncio.Task | None = None
+        self.cancel: asyncio.Event | None = None
+        self.speaking = False
+        self.speaking_since = 0.0
+        # Both describe the turn the VAD is collecting right now.
+        self.turn_echo = False     # opened while the assistant was playing
+        self.turn_barged = False   # confirmed as a real interruption
+
+    def system_prompt(self) -> str:
+        return " ".join(cfg["modes"][self.mode]["system_prompt"].split())
+
+
+session_by_ws: dict[WebSocket, Session] = {}
+
+
+def tts_params(sess: Session) -> dict:
+    """Per-mode TTS overrides, falling back to the global tts section."""
+    m = cfg["modes"][sess.mode]
+    return {
+        "voice": m.get("tts_voice", cfg["tts"]["voice"]),
+        "language": m.get("tts_language", cfg["tts"]["language"]),
+        "speed": float(m.get("tts_speed", cfg["tts"]["speed"])),
+    }
+
+
+def clean_for_tts(text: str) -> str:
+    """Remove markdown symbols; TTS has no notion of formatting."""
+    return MD_SYMBOLS_RE.sub("", text)
+
+
+async def tts_worker(ws: WebSocket, sess: Session, queue: asyncio.Queue,
+                     marks: dict, t0: float, cancel: asyncio.Event):
+    """Synthesizes queued sentences in order. None sentinel ends it."""
+    first_audio = False
+    params = tts_params(sess)
+    try:
+        while True:
+            text = await queue.get()
+            if text is None:
+                return
+            try:
+                async for audio, sr in tts.pcm_chunks(clean_for_tts(text), **params):
+                    if cancel.is_set():
+                        return
+                    if not first_audio:
+                        sess.speaking = True
+                        sess.speaking_since = time.perf_counter()
+                        await send_json(ws, {"type": "audio_start", "sample_rate": sr})
+                        await send_json(ws, {"type": "state", "value": "speaking"})
+                        marks["tts_first_audio"] = now_ms(t0)
+                        first_audio = True
+                    await ws.send_bytes(audio.tobytes())
+            except TTSError as e:
+                await send_json(ws, {"type": "tts_error", "message": str(e)[:200]})
+    finally:
+        # The client reports back when the queue has drained; until then the
+        # mic still hears the assistant.
+        if first_audio:
+            await send_json(ws, {"type": "audio_end"})
+
+
+async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
+                           cancel: asyncio.Event):
+    t0 = time.perf_counter()
+    marks: dict = {}
+    queue: asyncio.Queue = asyncio.Queue()
+    worker = asyncio.create_task(tts_worker(ws, sess, queue, marks, t0, cancel))
+    try:
+        text = await asr.transcribe(pcm24, sr=CLIENT_SR)
+        marks["asr_done"] = now_ms(t0)
+        if not text:
+            await send_json(ws, {"type": "error", "message": "empty transcription"})
+            return
+        await send_json(ws, {"type": "user_text", "text": text})
+
+        messages = [{"role": "system", "content": sess.system_prompt()}]
+        messages += sess.history[-20:]
+        messages.append({"role": "user", "content": text})
+
+        await send_json(ws, {"type": "state", "value": "thinking"})
+        reply_parts, sent_start = [], 0
+
+        async for delta in llm.stream_chat(messages, cancel=cancel):
+            if cancel.is_set():
+                break
+            reply_parts.append(delta)
+            await send_json(ws, {"type": "reply_delta", "text": delta})
+            cleaned = THINK_RE.sub("", "".join(reply_parts))
+            # Emit every complete sentence (>= SENTENCE_MIN_CHARS) for TTS.
+            emitted, sent_start = extract_sentences(cleaned, sent_start)
+            for sentence in emitted:
+                await send_json(ws, {"type": "sentence", "text": sentence})
+                queue.put_nowait(sentence)
+        if cancel.is_set():
+            await send_json(ws, {"type": "interrupted"})
+            return
+
+        reply = THINK_RE.sub("", "".join(reply_parts)).strip()
+        rest = reply[sent_start:].strip() if sent_start < len(reply) else ""
+        if rest:
+            await send_json(ws, {"type": "sentence", "text": rest})
+            queue.put_nowait(rest)
+        queue.put_nowait(None)  # sentinel: drain then stop
+        await worker
+
+        if reply:
+            sess.history.append({"role": "user", "content": text})
+            sess.history.append({"role": "assistant", "content": reply})
+        await send_json(ws, {"type": "reply_done", "marks": marks})
+    except Exception as e:  # keep the socket alive; surface the error
+        queue.put_nowait(None)
+        await send_json(ws, {"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
+    finally:
+        worker.cancel()
+        if not cancel.is_set():
+            await send_json(ws, {"type": "state", "value": "listening"})
+
+
+async def cancel_turn(sess: Session):
+    """Stop the running turn and clear the speaking flag.
+
+    The cancel event is dropped here and rebuilt per turn: reusing one
+    across turns would make the next turn see a stale set flag and abort
+    as soon as it starts.
+    """
+    sess.speaking = False
+    if sess.cancel:
+        sess.cancel.set()
+    task = sess.turn_task
+    sess.turn_task = None
+    sess.cancel = None
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def start_turn(ws: WebSocket, sess: Session, pcm24: np.ndarray):
+    await cancel_turn(sess)
+    sess.cancel = asyncio.Event()
+    sess.turn_task = asyncio.create_task(
+        handle_utterance(ws, sess, pcm24, sess.cancel)
+    )
+
+
+async def cut_off(ws: WebSocket, sess: Session):
+    sess.turn_barged = True
+    await send_json(ws, {"type": "stop_playback", "reason": "barge_in"})
+    await cancel_turn(sess)
+    await send_json(ws, {"type": "state", "value": "hearing"})
+
+
+async def vad_task(ws: WebSocket, sess: Session):
+    while True:
+        pcm = np.frombuffer(await sess.q.get(), dtype="<i2")
+        # While the assistant plays, its own voice is in the mic: demand a
+        # higher probability before believing a frame is the child.
+        thr = BARGE_IN_THRESHOLD if sess.speaking else None
+        for ev in sess.svad.feed(pcm, thr):
+            if ev.kind == "speech_start":
+                sess.turn_echo = sess.speaking
+                sess.turn_barged = False
+                await send_json(ws, {"type": "state", "value": "hearing"})
+            elif sess.turn_echo and not sess.turn_barged:
+                continue  # echo of the assistant, not a turn of its own
+            else:
+                await start_turn(ws, sess, ev.pcm24)
+        if barge_in_due(sess.speaking, sess.svad.active, sess.turn_barged,
+                        sess.svad.speech_ms,
+                        (time.perf_counter() - sess.speaking_since) * 1000):
+            await cut_off(ws, sess)
+
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    await ws.accept()
+    sess = Session()
+    session_by_ws[ws] = sess
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if (text := msg.get("text")) is not None:
+                data = json.loads(text)
+                mtype = data.get("type")
+                if mtype == "mode":
+                    sess.mode = data["value"] if data["value"] in cfg["modes"] else DEFAULT_MODE
+                    await send_json(ws, {"type": "mode", "value": sess.mode})
+                elif mtype == "start":
+                    if not sess.streaming:
+                        sess.streaming = True
+                        sess.vad_task = asyncio.create_task(vad_task(ws, sess))
+                        await send_json(ws, {"type": "state", "value": "listening"})
+                elif mtype == "stop":
+                    sess.streaming = False
+                    await cancel_turn(sess)
+                    if sess.vad_task:
+                        sess.vad_task.cancel()
+                        sess.vad_task = None
+                elif mtype == "interrupt":
+                    sess.turn_barged = True
+                    await send_json(ws, {"type": "stop_playback", "reason": "manual"})
+                    await cancel_turn(sess)
+                    await send_json(ws, {"type": "state", "value": "listening"})
+                elif mtype == "playback":
+                    if data.get("value") == "ended":
+                        sess.speaking = False
+                elif mtype == "ping":
+                    await send_json(ws, {"type": "pong"})
+            elif (data := msg.get("bytes")) is not None and sess.streaming:
+                sess.q.put_nowait(data)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await cancel_turn(sess)
+        if sess.vad_task:
+            sess.vad_task.cancel()
+        session_by_ws.pop(ws, None)
+
+
+@app.get("/modes")
+async def get_modes():
+    """Mode list for the client dropdown; modes are free-form in
+    config.yaml, so an age group is just another entry."""
+    return {
+        "default": DEFAULT_MODE,
+        "modes": [
+            {"name": name, "label": m.get("label", name)}
+            for name, m in cfg["modes"].items()
+        ],
+    }
+
+
+# Catch-all static mount must come last: routes registered before it win.
+app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
