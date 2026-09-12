@@ -115,7 +115,7 @@ def main():
     ap.add_argument("--out", default="docs/bench/m1-llm.md")
     args = ap.parse_args()
 
-    with httpx.Client() as client:
+    with httpx.Client(trust_env=False) as client:
         # Warmup (model load, caches).
         stream_once(client, args.base_url, args.model, TTFT_PROMPT, 16)
 
