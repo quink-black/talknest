@@ -27,6 +27,11 @@ ASR_GPU_UTIL="${ASR_GPU_UTIL:-0.50}"
 # short utterance at a time, so the defaults only waste VRAM.
 ASR_MAX_BATCHED="${ASR_MAX_BATCHED:-2048}"
 ASR_MAX_SEQS="${ASR_MAX_SEQS:-2}"
+# Quantization of the weights, e.g. fp8 to halve them and hand the freed
+# VRAM to the LLM; unset keeps the checkpoint's own dtype. Weights are
+# only half of the pool, so pair it with a lower ASR_GPU_UTIL to
+# actually free memory.
+ASR_QUANT="${ASR_QUANT:-}"
 
 ASR_BIN="${ASR_BIN:-}"
 if [ -z "$ASR_BIN" ] && [ -n "$ASR_VENV" ]; then
@@ -51,7 +56,12 @@ esac
 
 export MAX_JOBS="${MAX_JOBS:-4}"
 export HF_HOME="${HF_HOME:-$MODEL_ROOT/.cache/hf}"
-exec "${ASR_CMD[@]}" \
-    --served-model-name Qwen3-ASR-1.7B --host 127.0.0.1 --port 8001 \
-    --max-model-len 4096 --gpu-memory-utilization "$ASR_GPU_UTIL" \
+ARGS=(
+    --served-model-name Qwen3-ASR-1.7B --host 127.0.0.1 --port 8001
+    --max-model-len 4096 --gpu-memory-utilization "$ASR_GPU_UTIL"
     --max-num-batched-tokens "$ASR_MAX_BATCHED" --max-num-seqs "$ASR_MAX_SEQS"
+)
+if [ -n "$ASR_QUANT" ]; then
+    ARGS+=( --quantization "$ASR_QUANT" )
+fi
+exec "${ASR_CMD[@]}" "${ARGS[@]}"
