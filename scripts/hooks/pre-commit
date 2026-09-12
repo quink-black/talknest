@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit hook: block a commit whose staged content contains secrets.
+# Installed via: git config core.hooksPath scripts/hooks
+#
+# Skips the scan (with a warning) when gitleaks is not installed so
+# contributors without it are not blocked; installs at
+# https://github.com/gitleaks/gitleaks/releases
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "pre-commit: gitleaks not found, skipping secret scan" >&2
+    exit 0
+fi
+exec gitleaks protect --staged

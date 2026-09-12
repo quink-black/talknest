@@ -162,3 +162,15 @@ scripts/gen_dev_cert.sh                    # 生成自签证书（SAN 覆盖本�
 ./venv/bin/python tests/ws_smoke.py --barge   # 同上，并断言插话能打断
 ./venv/bin/python scripts/bench_llm.py     # LLM 延迟基准
 ```
+
+## 提交前密钥扫描
+
+仓库带 gitleaks pre-commit hook（`scripts/hooks/pre-commit`），提交暂存
+内容含密钥特征时直接拒绝。一次性启用：
+
+```bash
+git config core.hooksPath scripts/hooks
+gitleaks version || echo "先安装: https://github.com/gitleaks/gitleaks/releases"
+```
+
+未安装 gitleaks 时 hook 只警告不拦截。
