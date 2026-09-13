@@ -49,7 +49,10 @@ reply:
 
 vad:
   threshold: 0.5
-  silence_ms: 500        # tail of silence that ends an utterance
+  silence_ms: 700        # tail of silence that ends an utterance; at
+                         # 500 a child's pause splits one utterance into
+                         # two turns (measured: a synthesized sentence
+                         # with a natural pause split 1 run in 3)
   start_ms: 120          # voiced run that opens an utterance
   min_speech_ms: 300     # shorter bursts are noise (coughs, chair noise)
   max_speech_ms: 20000   # hard cap so a stuck mic cannot record forever
