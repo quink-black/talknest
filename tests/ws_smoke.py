@@ -56,11 +56,43 @@ async def push_silence(ws, seconds: float):
     await push(ws, np.zeros(int(seconds * CLIENT_SR), dtype=np.int16))
 
 
+def loudest_window(pcm: np.ndarray, seconds: float) -> np.ndarray:
+    """The most energetic `seconds` of a clip.
+
+    Synthesized speech opens with hundreds of milliseconds of room tone,
+    so taking the head of the clip hands the VAD a mostly silent burst
+    that it drops as noise instead of a short utterance.
+    """
+    n = int(seconds * CLIENT_SR)
+    if len(pcm) <= n:
+        return pcm
+    rms = np.sqrt(np.convolve(pcm.astype(np.float64) ** 2,
+                              np.ones(n) / n, mode="valid"))
+    start = int(np.argmax(rms))
+    return pcm[start : start + n]
+
+
 async def pump(ws, pcm, reply_started: asyncio.Event, stop: asyncio.Event,
-               barge: bool):
+               barge: bool, reask: bool, transcribed: asyncio.Event):
     """Play the utterance, then keep the stream alive with silence."""
     await push(ws, pcm)
     await push_silence(ws, SILENCE_S)
+    if reask:
+        # Speak again while the answer is still being produced: no audio
+        # has played yet, and an impatient "喂?" must not throw away a
+        # reply that is seconds away from being spoken.
+        try:
+            async with asyncio.timeout(60):
+                await transcribed.wait()
+        except TimeoutError:
+            print("[smoke] TIMEOUT waiting for the transcription")
+            return
+        await asyncio.sleep(0.6)
+        # Short enough to be impatience rather than a new question, long
+        # enough that the VAD accepts it as an utterance at all.
+        print("[smoke] re-asking before the reply has sounded (impatience)")
+        await push(ws, loudest_window(pcm, 0.6))
+        await push_silence(ws, SILENCE_S)
     if barge:
         try:
             async with asyncio.timeout(60):
@@ -78,7 +110,7 @@ async def pump(ws, pcm, reply_started: asyncio.Event, stop: asyncio.Event,
 
 
 async def run(url: str, text: str, mode: str, save: str | None,
-              barge: bool) -> bool:
+              barge: bool, reask: bool) -> bool:
     # Match the probe voice to the mode's conversation language: kid
     # modes speak Chinese, adult mode English.
     if mode == "adult":
@@ -97,7 +129,8 @@ async def run(url: str, text: str, mode: str, save: str | None,
         import ssl
         ssl_ctx = ssl._create_unverified_context()
     events, audio_chunks, reply_text, user_texts = [], [], [], []
-    reply_started, stop = asyncio.Event(), asyncio.Event()
+    reply_started, stop, transcribed = (asyncio.Event(), asyncio.Event(),
+                                        asyncio.Event())
     # A real client keeps playing after the last frame arrives, so report
     # playback end only once the buffered audio would have drained.
     played: asyncio.Task | None = None
@@ -111,7 +144,8 @@ async def run(url: str, text: str, mode: str, save: str | None,
     async with websockets.connect(url, max_size=8 * 1024 * 1024, ssl=ssl_ctx) as ws:
         await ws.send(json.dumps({"type": "mode", "value": mode}))
         await ws.send(json.dumps({"type": "start"}))
-        feeder = asyncio.create_task(pump(ws, pcm16, reply_started, stop, barge))
+        feeder = asyncio.create_task(pump(ws, pcm16, reply_started, stop,
+                                         barge, reask, transcribed))
         try:
             async with asyncio.timeout(120):
                 async for msg in ws:
@@ -139,6 +173,7 @@ async def run(url: str, text: str, mode: str, save: str | None,
                             {"type": "playback", "value": "ended"}))
                     elif ev["type"] == "user_text":
                         user_texts.append(ev["text"])
+                        transcribed.set()
                         print(f"[smoke] asr: {ev['text']!r}")
                     elif ev["type"] == "reply_delta":
                         reply_text.append(ev["text"])
@@ -175,6 +210,10 @@ async def run(url: str, text: str, mode: str, save: str | None,
         print(f"[smoke] reply audio saved: {save}")
 
     ok = bool(reply.strip()) and audio_bytes > 16000
+    if reask:
+        # The impatience must have been swallowed: one turn, one answer.
+        print(f"[smoke] re-ask survived: turns={len(user_texts)}")
+        ok = ok and len(user_texts) == 1
     if barge:
         print(f"[smoke] barge-in seen: {cut_seen}, turns: {len(user_texts)}")
         ok = ok and cut_seen and len(user_texts) >= 2
@@ -206,11 +245,15 @@ async def main_async():
     ap.add_argument("--mode", default="kid", choices=["kid", "kid_upper", "adult"])
     ap.add_argument("--barge", action="store_true",
                     help="speak over the reply and expect it to be cut off")
+    ap.add_argument("--reask", action="store_true",
+                    help="speak again before any audio has played; the "
+                         "answer must still arrive")
     ap.add_argument("--save", default=None)
     args = ap.parse_args()
     url = args.url or default_url()
     print(f"[smoke] url: {url}")
-    ok = await run(url, args.text, args.mode, args.save, args.barge)
+    ok = await run(url, args.text, args.mode, args.save, args.barge,
+                   args.reask)
     raise SystemExit(0 if ok else 1)
 
 

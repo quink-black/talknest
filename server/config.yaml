@@ -37,9 +37,15 @@ tts:
   language: English
   speed: 1.0           # global playback rate; modes may override
 
+# Reply chunking on the way to TTS. Every chunk costs one synthesis round
+# trip, so this trades first-audio latency against round trips and against
+# the choppiness of speaking in very short fragments.
+reply:
+  chunk_min_chars: 10    # shorter chunks merge into the following one
+
 vad:
   threshold: 0.5
-  silence_ms: 700        # tail of silence that ends an utterance
+  silence_ms: 500        # tail of silence that ends an utterance
   start_ms: 120          # voiced run that opens an utterance
   min_speech_ms: 300     # shorter bursts are noise (coughs, chair noise)
   max_speech_ms: 20000   # hard cap so a stuck mic cannot record forever
@@ -52,6 +58,10 @@ vad:
   barge_in_threshold: 0.6  # barely above threshold on purpose: a higher
                            # bar costs ~1 s of onset delay
   playback_grace_ms: 300   # ignore VAD this long after playback starts
+  # Interrupting a turn that has not spoken yet (still in ASR/LLM/TTS).
+  # The assistant is silent then, so there is no echo to reject -- but a
+  # child waiting for an answer says "喂?" and must not lose the answer.
+  pending_barge_in_ms: 1200
 
 # Default conversation mode for a new session; the client can switch at
 # any time (per-session, effective on the next turn). Modes below are
