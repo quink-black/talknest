@@ -159,6 +159,22 @@ class TestStore:
         store.set_setting("current_unit", "food")
         assert store.get_setting("current_unit") == "food"
 
+    def test_review_skips_untaught_and_mastered(self, store):
+        assert store.review_due(10) == []          # nothing introduced yet
+        store.touch(["red"], 1, False)             # box 1
+        assert store.review_due(10) == ["red"]
+        store.set_box("red", 4, manual=False)      # mastered
+        assert store.review_due(10) == []
+
+    def test_review_takes_the_weakest_first(self, store):
+        store.set_box("red", 3, manual=False)
+        store.set_box("blue", 1, manual=False)
+        assert store.review_due(10) == ["blue", "red"]
+
+    def test_review_is_capped(self, store):
+        store.touch(["red", "blue"], 1, False)
+        assert len(store.review_due(1)) == 1
+
     def test_new_and_known_queries(self, store):
         assert store.new_in_unit("colors", 2) == ["red", "blue"]
         store.touch(["red"], 1, False)
@@ -248,6 +264,13 @@ class TestScheduler:
         plan = scheduler.plan(store, UNITS,
                               state_block.Caps(new_items=1, known_items=5))
         assert (plan.unit, plan.new) == ("colors", ["red"])
+
+    def test_plan_carries_review_and_keeps_it_out_of_known(self, store):
+        store.touch(["red", "blue"], 1, False)
+        plan = scheduler.plan(store, UNITS, state_block.Caps(new_items=1))
+        assert plan.review == ["red", "blue"]
+        assert plan.new == ["cat"]
+        assert "red" not in plan.known and "blue" not in plan.known
 
     def test_window_is_the_unit_and_two_before_it(self):
         assert scheduler.window(UNITS, "animals") == ["colors", "animals"]

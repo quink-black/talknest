@@ -220,6 +220,9 @@ class Session:
         self.vocab = {w for u in self.units for w in u.words}
         self.tracked = self.vocab - {w for u in self.units for w in u.untracked}
         self.store.sync_units(self.units)
+        # Session start is when words that have not come up for a while drop
+        # back a box, so they start turning up in the review queue again.
+        self.store.demote_stale()
         self.session_id = self.store.start_session(self.mode)
 
     def close(self):

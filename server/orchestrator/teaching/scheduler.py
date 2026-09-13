@@ -35,11 +35,14 @@ def plan(store: Store, units: list, caps: state_block.Caps) -> state_block.Plan:
     unit = current_unit(store, units)
     if unit is None:
         return state_block.Plan()
-    return state_block.Plan(
-        unit=unit.id,
-        new=store.new_in_unit(unit.id, caps.new_items),
-        known=store.known_in_units(window(units, unit.id), caps.known_items),
-    )
+    new = store.new_in_unit(unit.id, caps.new_items)
+    review = store.review_due(caps.review_items)
+    # A word already picked for review is not listed as known as well: the
+    # block is short, and the same word twice is one hint too many.
+    known = [w for w in store.known_in_units(window(units, unit.id),
+                                             caps.known_items + len(review))
+             if w not in review][: caps.known_items]
+    return state_block.Plan(unit=unit.id, new=new, review=review, known=known)
 
 
 def window(units: list, unit_id: str) -> list[str]:

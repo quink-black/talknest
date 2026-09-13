@@ -149,6 +149,21 @@ class Store:
             "ORDER BY rowid LIMIT ?", (unit, limit)).fetchall()
         return [r["lemma"] for r in rows]
 
+    def review_due(self, limit: int) -> list[str]:
+        """Words met but not yet mastered, weakest first.
+
+        Oldest first inside a box, so the word that has not come up for the
+        longest is the one brought back. Mastered words are left alone: the
+        point of mastering one is that it stops coming back.
+        """
+        if limit <= 0:
+            return []
+        rows = self.db.execute(
+            "SELECT lemma FROM words WHERE box >= 1 AND box < ? "
+            "ORDER BY box, last_seen_at, rowid LIMIT ?",
+            (MASTERY_BOX, limit)).fetchall()
+        return [r["lemma"] for r in rows]
+
     def known_in_units(self, units, limit: int) -> list[str]:
         if not units or limit <= 0:
             return []
