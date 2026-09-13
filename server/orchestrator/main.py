@@ -71,6 +71,16 @@ DEFAULT_MODE = cfg.get("default_mode", "")
 if DEFAULT_MODE not in cfg["modes"]:
     DEFAULT_MODE = next(iter(cfg["modes"]))
 
+# Appended to a mode's system prompt when it sets english_ratio. A model
+# cannot count its own output, so the number is restated as a rule it can
+# follow sentence by sentence; the per-turn rules already in the prompt do
+# the real work. Modes without the key (adult) get nothing appended.
+ENGLISH_RATIO_RULE = (
+    "English letters must stay under {pct}% of the reply's English letters "
+    "plus Chinese characters. If what you are about to write would go over, "
+    "say it in Chinese instead."
+)
+
 web_dir = str(pathlib.Path(__file__).resolve().parent.parent.parent / "web")
 # Mounted after the /ws route is registered (see bottom of this file) so
 # the catch-all static mount cannot shadow it.
@@ -160,7 +170,12 @@ class Session:
         self.turn_barged = False   # confirmed as a real interruption
 
     def system_prompt(self) -> str:
-        return " ".join(cfg["modes"][self.mode]["system_prompt"].split())
+        m = cfg["modes"][self.mode]
+        text = m["system_prompt"]
+        ratio = m.get("english_ratio")
+        if ratio is not None:
+            text += " " + ENGLISH_RATIO_RULE.format(pct=round(float(ratio) * 100))
+        return " ".join(text.split())
 
 
 session_by_ws: dict[WebSocket, Session] = {}
