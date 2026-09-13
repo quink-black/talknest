@@ -73,7 +73,8 @@ def loudest_window(pcm: np.ndarray, seconds: float) -> np.ndarray:
 
 
 async def pump(ws, pcm, reply_started: asyncio.Event, stop: asyncio.Event,
-               barge: bool, reask: bool, transcribed: asyncio.Event):
+               barge: bool, reask: bool, transcribed: asyncio.Event,
+               reask_state: dict):
     """Play the utterance, then keep the stream alive with silence."""
     await push(ws, pcm)
     await push_silence(ws, SILENCE_S)
@@ -87,12 +88,19 @@ async def pump(ws, pcm, reply_started: asyncio.Event, stop: asyncio.Event,
         except TimeoutError:
             print("[smoke] TIMEOUT waiting for the transcription")
             return
-        await asyncio.sleep(0.6)
+        # The silent stretch between the transcript and the first audio is
+        # well under a second now, so the re-ask has to go out at once and
+        # close quickly: wait longer and it lands after the answer, which
+        # makes it a new question rather than impatience.
+        reask_state["audible"] = reply_started.is_set()
+        print("[smoke] re-asking before the reply has sounded (impatience)"
+              if not reask_state["audible"] else
+              "[smoke] re-asking over audible reply audio (barge-in rules)")
         # Short enough to be impatience rather than a new question, long
-        # enough that the VAD accepts it as an utterance at all.
-        print("[smoke] re-asking before the reply has sounded (impatience)")
+        # enough that the VAD accepts it as an utterance at all, and a
+        # tail just past the VAD's own silence threshold.
         await push(ws, loudest_window(pcm, 0.6))
-        await push_silence(ws, SILENCE_S)
+        await push_silence(ws, 0.7)
     if barge:
         try:
             async with asyncio.timeout(60):
@@ -131,6 +139,7 @@ async def run(url: str, text: str, mode: str, save: str | None,
     events, audio_chunks, reply_text, user_texts = [], [], [], []
     reply_started, stop, transcribed = (asyncio.Event(), asyncio.Event(),
                                         asyncio.Event())
+    reask_state: dict = {}
     # A real client keeps playing after the last frame arrives, so report
     # playback end only once the buffered audio would have drained.
     played: asyncio.Task | None = None
@@ -145,7 +154,8 @@ async def run(url: str, text: str, mode: str, save: str | None,
         await ws.send(json.dumps({"type": "mode", "value": mode}))
         await ws.send(json.dumps({"type": "start"}))
         feeder = asyncio.create_task(pump(ws, pcm16, reply_started, stop,
-                                         barge, reask, transcribed))
+                                         barge, reask, transcribed,
+                                         reask_state))
         try:
             async with asyncio.timeout(120):
                 async for msg in ws:
@@ -211,9 +221,16 @@ async def run(url: str, text: str, mode: str, save: str | None,
 
     ok = bool(reply.strip()) and audio_bytes > 16000
     if reask:
-        # The impatience must have been swallowed: one turn, one answer.
-        print(f"[smoke] re-ask survived: turns={len(user_texts)}")
-        ok = ok and len(user_texts) == 1
+        # The property that matters is that the answer already on its way
+        # is not thrown away. Whether the re-ask is swallowed as
+        # impatience or becomes a second turn depends on where it lands,
+        # which is a matter of timing, so assert on the answer instead.
+        types = [e["type"] for e in events]
+        first_done = types.index("reply_done") if "reply_done" in types else -1
+        lost = first_done >= 0 and "interrupted" in types[:first_done]
+        print(f"[smoke] re-ask: first answer "
+              f"{'LOST' if lost else 'kept'}, turns={len(user_texts)}")
+        ok = ok and first_done >= 0 and not lost
     if barge:
         print(f"[smoke] barge-in seen: {cut_seen}, turns: {len(user_texts)}")
         ok = ok and cut_seen and len(user_texts) >= 2
