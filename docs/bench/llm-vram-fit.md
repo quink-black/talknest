@@ -55,9 +55,9 @@ median), because that metric is dominated by TTS, not by the LLM.
 
 ## Why first audio barely moved
 
-`tts.pcm_chunks()` slices the response locally, but the sidecar calls
-`model.generate_custom_voice()` and returns only when the whole sentence
-is synthesized; qwen-tts has no true streaming (`non_streaming_mode=false`
+`tts.pcm_chunks()` sliced the response locally, but the sidecar called
+`model.generate_custom_voice()` and returned only when the whole sentence
+was synthesized; qwen-tts has no streaming API (`non_streaming_mode=false`
 merely simulates streamed *text input*). Measured TTS latency:
 
 | Input | Time |
@@ -66,7 +66,39 @@ merely simulates streamed *text input*). Measured TTS latency:
 | "Nice! You saw a dog." (21) | 1.85 s |
 | 76-char sentence | 4.08 s |
 
-So a turn is ASR 0.13 s + prefill 0.5 s + decode of the first sentence
-1-2 s + **TTS 2-4 s**. Cutting the first TTS chunk (emit at clause
-boundaries, not only at sentence ends) and speeding TTS up are the
-remaining levers; the VRAM change only helps the decode slice.
+So a turn was ASR 0.13 s + prefill 0.5 s + decode of the first sentence
+1-2 s + **TTS 2-4 s**: synthesis was the largest single term, and the
+VRAM change only touches the decode slice.
+
+## The ceiling: three models, one card
+
+TTS later gained a streaming route, which decodes the growing prefix once
+per chunk. That costs VRAM the 12G card does not have, and TTS started
+raising `torch.OutOfMemoryError` mid-reply with ~40 MiB left:
+
+    TTS 2.3 GiB + ASR 3.4 GiB + LLM 4.6 GiB = 10.3 GiB of 11.6 GiB
+    usable; ~1.3 GiB more goes to CUDA contexts and vLLM's reserved pool.
+
+Every configuration below was run as the same 14-turn WebSocket session
+(no browser), first audio in ms:
+
+| Config | VRAM left | First audio (median) | Result |
+|---|---|---|---|
+| 26 layers, MTP on | ~0.45 GiB | 1800 (8 turns) | OOM on turn 9 |
+| 22 layers, MTP on | ~1.2 GiB | 5400 | slow, rising |
+| 24 layers, MTP on | ~0.7 GiB | 5300 | slow, rising |
+| **26 layers, MTP off** | ~0.95 GiB | **2800, flat** | 14/14 turns |
+
+MTP speculative decoding is faster per token, but its draft context is
+~0.4 GiB and that is the 0.4 GiB the card is short of. Buying VRAM by
+removing layers costs more decode speed than MTP wins back, and the
+remaining CPU layers still degrade as the session goes on.
+
+What is on the card now: `TN9B_CTX=4096`, `TN9B_NGL=26`,
+`TN9B_SPEC=none`, `ASR_GPU_UTIL=0.36`, `ASR_MAX_SEQS=1`,
+`QWEN_TTS_STREAM_FRAMES=8`, and
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` for the TTS sidecar
+(its peak churns small blocks while streaming).
+
+Net effect of the two changes together: first audio went from a 6.2 s
+median that climbed past 15 s, to ~2.8 s that stays flat.

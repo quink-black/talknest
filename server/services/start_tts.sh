@@ -13,5 +13,11 @@ REPO_ROOT="$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"
 # shellcheck source=../../scripts/local_env.sh
 . "$REPO_ROOT/scripts/local_env.sh"
 
+# Streaming decodes the growing prefix once per chunk, which churns small
+# blocks; expandable segments keep the cache from fragmenting into pieces
+# too small for the next allocation. The card is shared with ASR and the
+# LLM, so a fragmented cache here shows up as an out-of-memory failure.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
 exec "$REPO_ROOT/venv-tts/bin/uvicorn" qwen_tts_server:app \
     --app-dir "$SCRIPT_DIR" --host 127.0.0.1 --port 8002
