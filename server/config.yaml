@@ -36,6 +36,10 @@ tts:
                        # on :8002 for the 9 built-in speakers
   language: English
   speed: 1.0           # global playback rate; modes may override
+  # Take audio from the server chunk by chunk while it is still being
+  # generated instead of waiting for the finished sentence. Silently falls
+  # back to the one-shot route if the server has no streaming endpoint.
+  stream: true
 
 # Reply chunking on the way to TTS. Every chunk costs one synthesis round
 # trip, so this trades first-audio latency against round trips and against
