@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Launch the talknest CLI client without activating any venv.
+#
+#   scripts/talknest-cli              auto-detect ws/wss from the orchestrator
+#   scripts/talknest-cli ws://host:port/ws   explicit endpoint as the only arg
+#
+# Everything else has a default; pass --help for the full list.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -x "$REPO_ROOT/venv/bin/python" ]]; then
+    PY="$REPO_ROOT/venv/bin/python"
+elif [[ -x "$REPO_ROOT/../talknest/venv/bin/python" ]]; then
+    # git worktree: share the main checkout's venv
+    PY="$REPO_ROOT/../talknest/venv/bin/python"
+else
+    echo "no venv found (expected $REPO_ROOT/venv)" >&2
+    exit 1
+fi
+
+# A bare first argument is taken as the websocket url.
+if [[ $# -gt 0 && "$1" != -* ]]; then
+    URL="$1"
+    shift
+    set -- --url "$URL" "$@"
+fi
+
+export PYTHONPATH="$REPO_ROOT/client"
+exec "$PY" -m talknest_cli "$@"

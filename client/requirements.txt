@@ -1,0 +1,9 @@
+numpy>=1.26
+sounddevice>=0.5
+websockets>=12
+soxr>=0.5        # high quality resampling; linear interpolation is the fallback
+
+# Optional, only for --aec dtln:
+#   ai-edge-litert>=1.3   (tflite runtime; tflite-runtime has no 3.12 wheel)
+# Model files (not in this repo): github.com/breizhn/DTLN-aec pretrained_models,
+# passed as --aec-model /path/to/dtln_aec_128
