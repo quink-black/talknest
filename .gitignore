@@ -7,3 +7,5 @@ __pycache__/
 local.env
 .claude/
 certs/
+# Learner progress and the imported lexicon; never leave the machine
+data/

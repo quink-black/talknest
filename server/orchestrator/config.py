@@ -23,6 +23,17 @@ def model_root() -> Path:
     return _FALLBACK_MODEL_ROOT
 
 
+def data_root() -> Path:
+    """Root directory holding learner state and the imported lexicon.
+
+    Override with TALKNEST_DATA_DIR when the data should not live in the
+    checkout.
+    """
+    if env := os.environ.get("TALKNEST_DATA_DIR"):
+        return Path(env)
+    return Path(__file__).resolve().parents[2] / "data"
+
+
 def load() -> dict:
     path = None
     if env := os.environ.get("TALKNEST_CONFIG"):

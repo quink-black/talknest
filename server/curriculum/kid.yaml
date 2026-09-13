@@ -1,0 +1,45 @@
+# Starter curriculum for kid mode (7-10, complete beginner).
+# Units are returned in topological order of `after`, so the automatic
+# "next unit" is simply the first one that still has untaught words.
+version: 1
+mode: kid
+units:
+  - id: greetings
+    title: 打招呼与自我介绍
+    goal: 能打招呼，能说出自己的名字
+    words: [hello, hi, bye, name, I, my]
+    patterns: ["Hello!", "My name is ___.", "Bye bye!"]
+    after: []
+    sessions: 2
+
+  - id: colors
+    title: 颜色
+    goal: 能说出并指认常见颜色
+    words: [red, yellow, blue, green]
+    patterns: ["It is red.", "I like blue."]
+    after: [greetings]
+    sessions: 2
+
+  - id: numbers
+    title: 数字
+    goal: 能数到五
+    words: [one, two, three, four, five]
+    patterns: ["One, two, three!"]
+    after: [greetings]
+    sessions: 2
+
+  - id: animals
+    title: 动物
+    goal: 能说出常见动物的名字
+    words: [cat, dog, rabbit, bird]
+    patterns: ["It is a cat.", "I have a dog."]
+    after: [colors]
+    sessions: 3
+
+  - id: food
+    title: 吃的
+    goal: 能说出常见食物的名字
+    words: [apple, banana, milk, egg]
+    patterns: ["I like apples.", "I want milk."]
+    after: [numbers]
+    sessions: 3

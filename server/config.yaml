@@ -70,6 +70,21 @@ vad:
   # child waiting for an answer says "喂?" and must not lose the answer.
   pending_barge_in_ms: 1200
 
+# Teaching state: curriculum units, per-learner progress and the per-turn
+# plan block. Nothing reaches the LLM while enabled is false, so this can
+# land before the pipeline is wired to it.
+teaching:
+  enabled: false
+  # Item caps for the plan block. The block is prepended to the learner's
+  # own words every turn, so it is kept to one line and trimmed hard.
+  block:
+    new_items: 2
+    review_items: 5
+    known_items: 20
+    portrait_lines: 3
+    digest_lines: 2
+    line_chars: 30
+
 # Default conversation mode for a new session; the client can switch at
 # any time (per-session, effective on the next turn). Modes below are
 # free-form: each key is a mode name with its own system_prompt and
@@ -79,6 +94,7 @@ default_mode: kid
 modes:
   kid:
     label: 儿童 (7-10岁)
+    curriculum: kid           # server/curriculum/<name>.yaml
     # Ceiling on the English share of a reply (English letters over English
     # letters plus Chinese characters). Soft bias, not a guarantee: measured
     # median share is 0.40 with this unset, 0.38 at 0.2, 0.26 at 0.05. The
@@ -149,6 +165,7 @@ modes:
     #                     # artifacts on speech, keep off unless needed
   kid_upper:
     label: 儿童 (10-12岁)
+    curriculum: kid_upper
     system_prompt: >
       You are Sunny (Sunny 老师), a warm, patient English tutor for a
       Chinese upper-elementary-school child (about 10-12 years old)
@@ -187,6 +204,7 @@ modes:
     tts_language: Auto
   adult:
     label: 成人
+    curriculum: null          # free talk: no unit to advance through
     system_prompt: >
       You are a friendly English speaking partner for an adult Chinese
       learner. Hold a natural conversation at the learner's level.
