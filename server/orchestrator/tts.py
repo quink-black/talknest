@@ -145,7 +145,10 @@ class TTSClient:
                     for i in range(0, len(audio), step):
                         yield audio[i : i + step], sr
         except httpx.HTTPError:
-            self._streaming = False
+            # A break after audio was already played is not a "cannot
+            # stream" verdict: falling back would speak the sentence twice.
+            if not got_audio:
+                self._streaming = False
             return
         self._streaming = got_audio
 
