@@ -8,6 +8,9 @@ units:
     title: 打招呼与自我介绍
     goal: 能打招呼，能说出自己的名字
     words: [hello, hi, bye, name, I, my]
+    # Taught as part of "My name is ___", but too common to count: they turn
+    # up in sentences that have nothing to do with this unit.
+    untracked: [i, my]
     patterns: ["Hello!", "My name is ___.", "Bye bye!"]
     after: []
     sessions: 2

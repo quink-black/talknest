@@ -32,6 +32,10 @@ class Unit:
     patterns: tuple[str, ...]
     after: tuple[str, ...]
     sessions: int
+    # Taught, but not counted automatically. Function words such as "I" turn
+    # up in almost any English sentence, so matching them would report the
+    # child as having produced words they never said.
+    untracked: tuple[str, ...] = ()
 
 
 def load(mode: str, lexicon: set[str] | None = None,
@@ -69,6 +73,8 @@ def _unit(raw: dict, path: Path) -> Unit:
         patterns=tuple(str(p) for p in raw.get("patterns") or ()),
         after=tuple(str(a) for a in raw.get("after") or ()),
         sessions=int(raw.get("sessions", 1)),
+        untracked=tuple(str(w).strip().lower()
+                        for w in raw.get("untracked") or ()),
     )
 
 

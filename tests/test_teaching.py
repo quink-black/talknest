@@ -10,10 +10,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
 import pytest
 
+from orchestrator import main
 from orchestrator.config import load
-from orchestrator.teaching import curriculum, state_block
+from orchestrator.teaching import curriculum, match, scheduler, state_block
 from orchestrator.teaching.curriculum import CurriculumError, Unit
 from orchestrator.teaching.store import Store
+
+UNITS = [
+    Unit(id="colors", title="颜色", goal="", words=("red", "blue"),
+         patterns=(), after=(), sessions=1),
+    Unit(id="animals", title="动物", goal="", words=("cat",),
+         patterns=(), after=("colors",), sessions=1),
+]
 
 
 def _write(tmp_path: Path, name: str, text: str) -> Path:
@@ -63,6 +71,12 @@ class TestCurriculum:
         with pytest.raises(CurriculumError, match="lexicon"):
             curriculum.load("kid", lexicon={"hi"}, directory=tmp_path)
 
+    def test_untracked_words_parse(self, tmp_path):
+        _write(tmp_path, "kid.yaml",
+               "mode: kid\nunits:\n  - id: a\n    words: [i, cat]\n"
+               "    untracked: [i]\n")
+        assert curriculum.load("kid", directory=tmp_path)[0].untracked == ("i",)
+
     def test_lexicon_match_passes(self, tmp_path):
         _write(tmp_path, "kid.yaml",
                "mode: kid\nunits:\n  - id: a\n    words: [hi]\n")
@@ -73,12 +87,16 @@ class TestCurriculum:
 @pytest.fixture
 def store(tmp_path):
     s = Store("tester", tmp_path)
-    s.sync_units([
-        Unit(id="colors", title="颜色", goal="", words=("red", "blue"),
-             patterns=(), after=(), sessions=1),
-        Unit(id="animals", title="动物", goal="", words=("cat",),
-             patterns=(), after=("colors",), sessions=1),
-    ])
+    s.sync_units(UNITS)
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def session(tmp_path, monkeypatch):
+    monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+    s = main.Session()
+    s.open_learner("tester")
     yield s
     s.close()
 
@@ -183,9 +201,93 @@ class TestStateBlock:
             "【画像: " + "x" * 9 + "…】"
 
 
+class TestMatch:
+    def test_finds_curriculum_words(self):
+        assert match.find("The apple is red", ["red", "apple", "cat"]) == \
+            ["red", "apple"]
+
+    def test_plurals_match(self):
+        assert match.find("I like apples", ["apple"]) == ["apple"]
+        assert match.find("two boxes", ["box"]) == ["box"]
+
+    def test_chinese_alone_matches_nothing(self):
+        assert match.find("兔子怎么说", ["rabbit"]) == []
+
+    def test_order_follows_the_curriculum(self):
+        assert match.find("cat and apple", ["apple", "cat"]) == ["apple", "cat"]
+
+    def test_words_that_end_in_s_are_left_alone(self):
+        assert match.find("this is a bus", ["this", "bus"]) == ["this", "bus"]
+
+    def test_empty_inputs(self):
+        assert match.find("", ["cat"]) == []
+        assert match.find("cat", []) == []
+
+
+class TestScheduler:
+    def test_without_a_pick_the_first_unfinished_unit_wins(self, store):
+        assert scheduler.current_unit(store, UNITS).id == "colors"
+        store.touch(["red", "blue"], 1, False)
+        assert scheduler.current_unit(store, UNITS).id == "animals"
+
+    def test_parent_pick_wins(self, store):
+        store.set_setting(scheduler.CURRENT_UNIT, "animals")
+        assert scheduler.current_unit(store, UNITS).id == "animals"
+
+    def test_parent_pick_survives_a_finished_unit(self, store):
+        store.set_setting(scheduler.CURRENT_UNIT, "animals")
+        store.touch(["cat"], 1, False)
+        assert scheduler.current_unit(store, UNITS).id == "animals"
+
+    def test_unknown_pick_falls_back_to_automatic(self, store):
+        store.set_setting(scheduler.CURRENT_UNIT, "ghost")
+        assert scheduler.current_unit(store, UNITS).id == "colors"
+
+    def test_plan_respects_the_caps(self, store):
+        plan = scheduler.plan(store, UNITS,
+                              state_block.Caps(new_items=1, known_items=5))
+        assert (plan.unit, plan.new) == ("colors", ["red"])
+
+    def test_window_is_the_unit_and_two_before_it(self):
+        assert scheduler.window(UNITS, "animals") == ["colors", "animals"]
+
+
+class TestTurnPrompt:
+    def test_plan_block_never_enters_history(self, session):
+        messages = main.build_messages(session, "你好")
+        assert "【" in messages[-1]["content"]
+        assert messages[-1]["content"].endswith("你好")
+
+        session.history.append({"role": "user", "content": "你好"})
+        again = main.build_messages(session, "兔子怎么说")
+        assert again[-2]["content"] == "你好"
+        assert "【" not in again[-2]["content"]
+
+    def test_history_window_comes_from_the_profile(self, session):
+        session.history.extend(
+            {"role": "user", "content": f"u{i}"} for i in range(40))
+        assert len(main.build_messages(session, "now")) == \
+            main.HISTORY_MESSAGES + 2
+
+    def test_function_words_are_taught_but_not_counted(self, session):
+        assert "i" in session.vocab
+        assert "i" not in session.tracked
+
+    def test_teaching_rules_join_the_system_prompt(self, session):
+        assert "新授" in session.system_prompt()
+
+    def test_mode_switch_clears_the_conversation(self, session):
+        session.history.append({"role": "user", "content": "你好"})
+        session.mode = "kid"
+        session.history.clear()
+        session.load_curriculum()
+        assert session.history == []
+        assert session.units
+
+
 class TestTeachingConfig:
-    def test_disabled_until_the_pipeline_is_wired(self):
-        assert load()["teaching"]["enabled"] is False
+    def test_enabled(self):
+        assert load()["teaching"]["enabled"] is True
 
     def test_block_caps_match_the_renderer(self):
         caps = state_block.Caps(**load()["teaching"]["block"])

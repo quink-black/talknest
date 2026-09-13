@@ -23,8 +23,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
 from .asr import ASRClient
-from .config import load
+from .config import data_root, load
 from .llm import LLMClient
+from .teaching import curriculum, match, scheduler, state_block
+from .teaching.store import Store
 from .tts import TTSError, TTSClient
 from .vad import SileroVAD, StreamVAD
 
@@ -71,6 +73,13 @@ DEFAULT_MODE = cfg.get("default_mode", "")
 if DEFAULT_MODE not in cfg["modes"]:
     DEFAULT_MODE = next(iter(cfg["modes"]))
 
+TEACHING_CFG = cfg.get("teaching", {})
+TEACHING = bool(TEACHING_CFG.get("enabled"))
+BLOCK_CAPS = state_block.Caps(**TEACHING_CFG.get("block", {}))
+DEFAULT_LEARNER = str(TEACHING_CFG.get("default_learner", "default"))
+HISTORY_MESSAGES = int(
+    cfg["llm"]["profiles"][cfg["llm"]["active"]].get("history_messages", 20))
+
 # Appended to a mode's system prompt when it sets english_ratio. A model
 # cannot count its own output, so the number is restated as a rule it can
 # follow sentence by sentence; the per-turn rules already in the prompt do
@@ -79,6 +88,21 @@ ENGLISH_RATIO_RULE = (
     "English letters must stay under {pct}% of the reply's English letters "
     "plus Chinese characters. If what you are about to write would go over, "
     "say it in Chinese instead."
+)
+
+# How to read the plan block. These rules sit in the system prompt because
+# they never change, while the block itself carries the words and is rebuilt
+# every turn: llama.cpp can only reuse the cached prefix up to the first
+# token that differs, so everything volatile goes into the last message.
+TEACHING_RULES = (
+    "The text in brackets at the start of the child's message is your "
+    "teaching plan and a record of what the child has met. It is not "
+    "something the child said, so never repeat it and never refer to it. "
+    "Teach only the words listed under 新授. Words under 已会 are already "
+    "known: use them freely, but never present them as new. Bring words "
+    "under 复习 back into the conversation naturally instead of drilling "
+    "them. When the block lists no new words, ask the child what they "
+    "would like to talk about."
 )
 
 web_dir = str(pathlib.Path(__file__).resolve().parent.parent.parent / "web")
@@ -168,6 +192,44 @@ class Session:
         # Both describe the turn the VAD is collecting right now.
         self.turn_echo = False     # opened while the assistant was occupied
         self.turn_barged = False   # confirmed as a real interruption
+        self.learner = DEFAULT_LEARNER
+        self.store: Store | None = None
+        self.units: list = []
+        self.vocab: set[str] = set()
+        self.tracked: set[str] = set()
+        self.session_id: int | None = None
+        if TEACHING:
+            self.open_learner(DEFAULT_LEARNER)
+
+    def open_learner(self, learner: str):
+        """Point this session at a learner: their own store, fresh talk."""
+        if self.store is not None:
+            self.store.close()
+        self.learner = learner
+        self.history.clear()
+        self.store = Store(learner, data_root())
+        self.load_curriculum()
+
+    def load_curriculum(self):
+        """Units and vocabulary of the current mode; no-op without one."""
+        if self.store is None:
+            return
+        name = cfg["modes"][self.mode].get("curriculum")
+        self.units = curriculum.load(name) if name else []
+        self.vocab = {w for u in self.units for w in u.words}
+        self.tracked = self.vocab - {w for u in self.units for w in u.untracked}
+        self.store.sync_units(self.units)
+        self.session_id = self.store.start_session(self.mode)
+
+    def close(self):
+        """End the session row and release the store."""
+        if self.store is None:
+            return
+        if self.session_id is not None:
+            self.store.end_session(self.session_id)
+            self.session_id = None
+        self.store.close()
+        self.store = None
 
     def system_prompt(self) -> str:
         m = cfg["modes"][self.mode]
@@ -175,6 +237,8 @@ class Session:
         ratio = m.get("english_ratio")
         if ratio is not None:
             text += " " + ENGLISH_RATIO_RULE.format(pct=round(float(ratio) * 100))
+        if self.units:
+            text += " " + TEACHING_RULES
         return " ".join(text.split())
 
 
@@ -194,6 +258,12 @@ def tts_params(sess: Session) -> dict:
 def clean_for_tts(text: str) -> str:
     """Remove markdown symbols; TTS has no notion of formatting."""
     return MD_SYMBOLS_RE.sub("", text)
+
+
+def slug(name: str) -> str:
+    """Learner names become directory names, so keep them boring."""
+    return re.sub(r"[^a-z0-9_-]+", "-",
+                  name.strip().lower()).strip("-") or DEFAULT_LEARNER
 
 
 async def tts_worker(ws: WebSocket, sess: Session, queue: asyncio.Queue,
@@ -242,11 +312,49 @@ async def queue_sentence(ws: WebSocket, queue: asyncio.Queue, marks: dict,
     queue.put_nowait(sentence)
 
 
+def record_turn(sess: Session, learner_text: str, spoken: list[str],
+                interrupted: bool):
+    """Bookkeeping for one turn, including one the child cut short.
+
+    What counts as taught is what reached the TTS queue: a sentence that
+    was cut off after the child heard it still came up.
+    """
+    if sess.store is None or sess.session_id is None:
+        return
+    taught = match.find(" ".join(spoken), sess.tracked)
+    heard = match.find(learner_text, sess.tracked)
+    sess.store.touch(taught, sess.session_id, practiced=False)
+    sess.store.touch(heard, sess.session_id, practiced=True)
+    sess.store.log_turn(sess.session_id, learner_text, " ".join(spoken),
+                        sorted(set(taught) | set(heard)), interrupted)
+
+
+def build_messages(sess: Session, text: str) -> list[dict]:
+    """Prompt for one turn: stable rules, then history, then the plan.
+
+    The plan rides along with the child's own words and is never written to
+    history: history has to stay byte-identical between turns for llama.cpp
+    to reuse the cached prefix, and a stack of stale plans would tell the
+    tutor to re-teach what it just taught.
+    """
+    block = ""
+    if sess.store is not None and sess.units:
+        block = state_block.render(
+            scheduler.plan(sess.store, sess.units, BLOCK_CAPS), BLOCK_CAPS)
+    messages = [{"role": "system", "content": sess.system_prompt()}]
+    messages += sess.history[-HISTORY_MESSAGES:]
+    messages.append(
+        {"role": "user", "content": f"{block}\n\n{text}" if block else text})
+    return messages
+
+
 async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
                            cancel: asyncio.Event):
     t0 = time.perf_counter()
     marks: dict = {}
     queue: asyncio.Queue = asyncio.Queue()
+    spoken: list[str] = []
+    user_text = ""
     worker = asyncio.create_task(tts_worker(ws, sess, queue, marks, t0, cancel))
     try:
         text = await asr.transcribe(pcm24, sr=CLIENT_SR)
@@ -254,11 +362,10 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         if not text:
             await send_json(ws, {"type": "error", "message": "empty transcription"})
             return
+        user_text = text
         await send_json(ws, {"type": "user_text", "text": text})
 
-        messages = [{"role": "system", "content": sess.system_prompt()}]
-        messages += sess.history[-20:]
-        messages.append({"role": "user", "content": text})
+        messages = build_messages(sess, text)
 
         await send_json(ws, {"type": "state", "value": "thinking"})
         reply_parts, sent_start = [], 0
@@ -272,6 +379,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
             # Emit every complete sentence (>= SENTENCE_MIN_CHARS) for TTS.
             emitted, sent_start = extract_sentences(cleaned, sent_start)
             for sentence in emitted:
+                spoken.append(sentence)
                 await queue_sentence(ws, queue, marks, t0, sentence)
         if cancel.is_set():
             await send_json(ws, {"type": "interrupted"})
@@ -280,6 +388,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         reply = THINK_RE.sub("", "".join(reply_parts)).strip()
         rest = reply[sent_start:].strip() if sent_start < len(reply) else ""
         if rest:
+            spoken.append(rest)
             await queue_sentence(ws, queue, marks, t0, rest)
         queue.put_nowait(None)  # sentinel: drain then stop
         await worker
@@ -296,6 +405,8 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         await send_json(ws, {"type": "reply_done", "marks": marks})
     finally:
         worker.cancel()
+        if user_text:
+            record_turn(sess, user_text, spoken, cancel.is_set())
         if not cancel.is_set():
             await send_json(ws, {"type": "state", "value": "listening"})
 
@@ -383,6 +494,10 @@ async def ws_endpoint(ws: WebSocket):
                 mtype = data.get("type")
                 if mtype == "mode":
                     sess.mode = data["value"] if data["value"] in cfg["modes"] else DEFAULT_MODE
+                    # Mode and conversation are the same thing here: a reply
+                    # in the wrong register is worse than a fresh start.
+                    sess.history.clear()
+                    sess.load_curriculum()
                     await send_json(ws, {"type": "mode", "value": sess.mode})
                 elif mtype == "start":
                     if not sess.streaming:
@@ -400,6 +515,16 @@ async def ws_endpoint(ws: WebSocket):
                     await send_json(ws, {"type": "stop_playback", "reason": "manual"})
                     await cancel_turn(sess)
                     await send_json(ws, {"type": "state", "value": "listening"})
+                elif mtype == "learner":
+                    value = str(data.get("value", "")).strip() or DEFAULT_LEARNER
+                    sess.open_learner(slug(value))
+                    await send_json(ws, {"type": "learner", "value": sess.learner})
+                elif mtype == "unit":
+                    # Empty means "pick for me"; see scheduler.current_unit.
+                    value = str(data.get("value", "")).strip()
+                    if sess.store is not None:
+                        sess.store.set_setting(scheduler.CURRENT_UNIT, value)
+                    await send_json(ws, {"type": "unit", "value": value})
                 elif mtype == "playback":
                     if data.get("value") == "ended":
                         sess.speaking = False
@@ -413,6 +538,7 @@ async def ws_endpoint(ws: WebSocket):
         await cancel_turn(sess)
         if sess.vad_task:
             sess.vad_task.cancel()
+        sess.close()
         session_by_ws.pop(ws, None)
 
 

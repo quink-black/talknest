@@ -14,10 +14,12 @@ llm:
       base_url: http://127.0.0.1:9999/v1
       model: qwen3.5-9b
       api_key: ""
+      history_messages: 20    # turns kept in the prompt; see teaching.block
     vllm-qwen38-27b:
       base_url: http://127.0.0.1:9999/v1
       model: qwen3.8-27b-nvfp4
       api_key: ""
+      history_messages: 40
   sampling:            # official non-thinking settings for Qwen3.5
     temperature: 0.7
     top_p: 0.8
@@ -71,10 +73,9 @@ vad:
   pending_barge_in_ms: 1200
 
 # Teaching state: curriculum units, per-learner progress and the per-turn
-# plan block. Nothing reaches the LLM while enabled is false, so this can
-# land before the pipeline is wired to it.
+# plan block.
 teaching:
-  enabled: false
+  enabled: true
   # Item caps for the plan block. The block is prepended to the learner's
   # own words every turn, so it is kept to one line and trimmed hard.
   block:
@@ -128,8 +129,8 @@ modes:
       When the child asks how to say something (for example
       "兔子怎么说"), answer in the form "兔子的英文是 rabbit，就是兔子。",
       then invite the child to say it once ("跟我读一遍：rabbit！"). Teach
-      what fits a schoolchild's life: greetings, family, food,
-      animals, colors, numbers, school life, hobbies.
+      only what the plan at the start of the child's message lists, and
+      nothing outside it.
 
       React like a real conversation partner, not a cheering section:
       do not praise every attempt. Acknowledge briefly and vary the
