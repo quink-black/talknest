@@ -23,6 +23,10 @@
   table { border-collapse: collapse; margin-top: 1rem; font-size: .85rem; }
   th, td { border: 1px solid #ddd; padding: .3rem .6rem; text-align: right; }
   .hint { color: #888; font-size: .85rem; }
+  .devices { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-bottom: .4rem; }
+  .dev { display: flex; align-items: center; gap: .35rem; font-size: .9rem; color: #555; }
+  .dev select { font-size: .9rem; padding: .35rem .6rem; max-width: 250px; }
+  #deviceHint { margin: 0 0 .9rem; min-height: 1.3em; }
   #banner { display: none; background: #fdf3d7; border: 1px solid #e5c55b;
             border-radius: 8px; padding: .7rem 1rem; margin: 1rem 0;
             font-size: .9rem; line-height: 1.5; }
@@ -49,13 +53,20 @@
   <button id="pauseBtn">暂停</button>
 </div>
 
+<div class="devices">
+  <label class="dev">麦克风 <select id="micSelect"></select></label>
+  <label class="dev">扬声器 <select id="spkSelect"></select></label>
+</div>
+<p class="hint" id="deviceHint"></p>
+
 <button id="startBtn">点我开始对话</button>
 
 <div id="transcript"></div>
 <p class="hint">麦克风常开：直接对着麦克风说话就行，说完停顿一下会自动接话；
 对方说话时也可以直接插话打断。蓝牙耳机等设备的插拔会自动暂停并在设备回来后
-自动继续；手动暂停不会被自动恢复。麦克风依赖安全上下文，局域网 IP 走纯
-HTTP 时需要通过浏览器 flag 或 TLS 放行。</p>
+自动继续；手动暂停不会被自动恢复。默认输出跟随麦克风所在的设备（蓝牙耳机
+插上后会自动切到耳机扬声器），也可以在上面手动指定，选择会记住。麦克风依赖
+安全上下文，局域网 IP 走纯 HTTP 时需要通过浏览器 flag 或 TLS 放行。</p>
 
 <table>
   <thead><tr><th>ASR done</th><th>First audio</th></tr></thead>

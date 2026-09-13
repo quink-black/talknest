@@ -27,6 +27,15 @@ let playNextAt = 0, sources = [];
 let playbackActive = false, audioEnded = false, playSr = CLIENT_SR;
 let replyBubble = null;
 
+/* Picked in the UI and remembered across reloads. An empty id means auto:
+   the microphone follows the browser default, the speaker follows whatever
+   device the microphone belongs to. */
+const PREF_KEY = { mic: "talknest.mic", spk: "talknest.spk" };
+let audioInputs = [], audioOutputs = [];
+let preferredMicId = "", preferredSpkId = "";
+let appliedSpkId = "";   // null forces applyOutputDevice to try again
+let sinkWarned = null;   // only warn once per failed target
+
 function setStatus(text, busy) {
   $("status").textContent = STATUS_TEXT[text] || text;
   $("statusDot").className = busy ? "dot busy" : "dot idle";
@@ -163,16 +172,166 @@ function esc(s) {
   }[c]));
 }
 
-async function deviceStatus() {
+/* Before permission is granted a browser may hand back entries with an
+   empty deviceId; those cannot be selected or matched. */
+const PSEUDO_ID = new Set(["default", "communications"]);
+
+function listed(list) {
+  return list.filter((d) => d.deviceId);
+}
+function usable(list) {
+  return list.filter((d) => d.deviceId && !PSEUDO_ID.has(d.deviceId));
+}
+
+function loadPref(key) {
+  try { return localStorage.getItem(key) || ""; } catch (e) { return ""; }
+}
+function savePref(key, value) {
+  try { value ? localStorage.setItem(key, value) : localStorage.removeItem(key); }
+  catch (e) { /* private mode: keep the choice for this page only */ }
+}
+
+async function refreshDevices() {
   const devices = await navigator.mediaDevices.enumerateDevices();
+  const pick = (kind) => devices
+    .filter((d) => d.kind === kind)
+    .map((d) => ({ deviceId: d.deviceId, groupId: d.groupId || "", label: d.label || "" }));
+  audioInputs = pick("audioinput");
+  audioOutputs = pick("audiooutput");
   lastDevices = devices.map((d) => `${d.kind}:${d.label || "?"}`);
-  let inputs = 0, outputs = 0;
-  for (const d of devices) {
-    if (d.kind === "audioinput") inputs++;
-    else if (d.kind === "audiooutput") outputs++;
+  if (audioOutputs.length) sawOutput = true;
+  syncDeviceUi();
+  return { inputs: audioInputs.length, outputs: audioOutputs.length };
+}
+
+/* Where the capture is really coming from. getSettings reports the device
+   the browser actually opened, which is the only truth once a Bluetooth
+   headset has taken over. */
+function micDeviceInfo() {
+  const track = micStream && micStream.getAudioTracks()[0];
+  if (!track) return null;
+  const s = track.getSettings ? track.getSettings() : {};
+  return {
+    deviceId: s.deviceId || "",
+    groupId: s.groupId || "",
+    label: track.label || "",
+  };
+}
+
+/* A removed device drops out of the list while its track can still look
+   live, so the list is the stronger signal - but only once the list is
+   real: empty ids would call every device gone. */
+function micDeviceGone() {
+  const info = micDeviceInfo();
+  if (!info || !info.deviceId || !usable(audioInputs).length) return false;
+  return !audioInputs.some((d) => d.deviceId === info.deviceId);
+}
+
+/* The speaker to use: an explicit choice wins, otherwise the output that
+   shares a groupId with the microphone - the other half of the same
+   headset. That pairing is what a reconnect has to restore, because the
+   AudioContext keeps whatever sink it was created with. */
+function resolveOutputDevice() {
+  if (preferredSpkId && audioOutputs.some((d) => d.deviceId === preferredSpkId)) {
+    return preferredSpkId;
   }
-  if (outputs > 0) sawOutput = true;
-  return { inputs, outputs };
+  const info = micDeviceInfo();
+  if (info && info.groupId) {
+    const pair = usable(audioOutputs)
+      .find((d) => d.groupId && d.groupId === info.groupId);
+    if (pair) return pair.deviceId;
+  }
+  return "";   // empty string is the system default sink
+}
+
+function currentSinkId() {
+  if (!audioCtx) return "";
+  return typeof audioCtx.sinkId === "string" ? audioCtx.sinkId : appliedSpkId || "";
+}
+
+/* setSinkId reroutes the whole context, so capture and playback stay on one
+   clock and the browser's echo cancellation keeps its reference signal.
+   Only Chrome implements it; elsewhere playback follows the OS default. */
+async function applyOutputDevice() {
+  if (!audioCtx || typeof audioCtx.setSinkId !== "function") return;
+  const want = resolveOutputDevice();
+  if (want === appliedSpkId) return;
+  appliedSpkId = want;
+  try {
+    await audioCtx.setSinkId(want);
+    if (audioCtx.state !== "running") await audioCtx.resume();
+  } catch (e) {
+    // A device that just reappeared can refuse the first attempt, so leave
+    // the door open for the next look instead of sticking on the old sink.
+    appliedSpkId = null;
+    if (sinkWarned !== want) {
+      sinkWarned = want;
+      console.warn("[talknest] setSinkId failed:", want || "default", e.name, e.message);
+    }
+  }
+  syncDeviceUi();
+}
+
+/* ---- device panel ---- */
+function deviceName(list, id) {
+  if (!id) return "";
+  const d = list.find((x) => x.deviceId === id);
+  if (!d) return id;
+  return d.label || (PSEUDO_ID.has(id) ? "系统默认" : id);
+}
+
+function fillSelect(sel, list, chosen, inUse, noun) {
+  const opts = [{ value: "", text: inUse ? `自动（当前：${inUse}）` : "自动" }];
+  for (const d of listed(list)) {
+    const name = d.label || (PSEUDO_ID.has(d.deviceId) ? "系统默认" : noun);
+    opts.push({ value: d.deviceId, text: name });
+  }
+  // Rebuilding an open dropdown would close it, so only touch the DOM when
+  // the set of choices really changed.
+  const sig = opts.map((o) => `${o.value}=${o.text}`).join("|");
+  if (sel.dataset.sig !== sig) {
+    sel.innerHTML = "";
+    for (const o of opts) {
+      const el = document.createElement("option");
+      el.value = o.value;
+      el.textContent = o.text;
+      sel.appendChild(el);
+    }
+    sel.dataset.sig = sig;
+  }
+  // A remembered device that is temporarily absent falls back to auto here
+  // and comes back on its own once it is listed again.
+  sel.value = opts.some((o) => o.value === chosen) ? chosen : "";
+}
+
+function syncDeviceUi() {
+  const micSel = $("micSelect"), spkSel = $("spkSelect");
+  if (!micSel || !spkSel) return;
+  const info = micDeviceInfo();
+  const inUseMic = info ? (info.label || deviceName(audioInputs, info.deviceId)) : "";
+  // No context yet means nothing has been routed; an empty sinkId on a live
+  // context means it really is on the system default.
+  const sink = currentSinkId();
+  const inUseSpk = !audioCtx ? "" : (sink ? deviceName(audioOutputs, sink) : "系统默认");
+  fillSelect(micSel, audioInputs, preferredMicId, inUseMic, "麦克风");
+  fillSelect(spkSel, audioOutputs, preferredSpkId, inUseSpk, "扬声器");
+
+  const canPick = typeof AudioContext === "function"
+    && typeof AudioContext.prototype.setSinkId === "function";
+  spkSel.disabled = !canPick || !listed(audioOutputs).length;
+
+  const out = info && sink ? audioOutputs.find((d) => d.deviceId === sink) : null;
+  const split = !!(info && out && info.groupId && out.groupId
+                   && info.groupId !== out.groupId);
+  const hint = $("deviceHint");
+  if (!canPick) {
+    hint.textContent = "当前浏览器不支持选择扬声器，声音走系统默认输出设备。";
+  } else if (split) {
+    hint.textContent = `麦克风和扬声器不是同一个设备（${inUseMic || "麦克风"} → `
+      + `${inUseSpk || "扬声器"}），回声消除会变弱，助手可能自我打断。`;
+  } else {
+    hint.textContent = "";
+  }
 }
 
 /* Only a machine that has shown an output device can lose one: a host
@@ -229,11 +388,18 @@ async function checkDevices() {
   if (!mediaAvailable() || !ws || ws.readyState !== 1) return;
   // A null status means enumeration is unavailable here; the track state
   // and getUserMedia below are then the only tests left.
-  const status = await deviceStatus().catch(() => null);
+  const status = await refreshDevices().catch(() => null);
   const missing = status ? missingDeviceText(status) : "";
   if (missing) {
     if (streaming) pauseForMissingDevice(missing);
     else if (wantStreaming) waitForDevice(missing);
+    return;
+  }
+  // A headset that went away takes its deviceId out of the list, which is
+  // a stronger signal than a track that still claims to be live.
+  if (micDeviceGone()) {
+    if (streaming) pauseForMissingDevice("麦克风");
+    else if (wantStreaming) waitForDevice("麦克风", "设备已移除");
     return;
   }
   // The device list can still name a device whose track has died, so the
@@ -243,6 +409,8 @@ async function checkDevices() {
     else if (wantStreaming) waitForDevice("麦克风", "设备未就绪");
     return;
   }
+  // Route to whatever speaker belongs to the microphone now.
+  await applyOutputDevice();
   // The device came back. A denied permission or a suspended AudioContext
   // needs a click instead, so the watchdog must not retry those.
   if (wantStreaming && !streaming && !blocked) await startSession();
@@ -266,9 +434,9 @@ function waitForDevice(missing, detail) {
 
 function pauseForMissingDevice(missing) {
   stopStreaming();
-  // Keep a suspended track so an unmute can resume it; a dead one has to
-  // be re-acquired.
-  if (!micTrackLive()) teardownMic();
+  // Keep a suspended track so an unmute can resume it; a dead one, or one
+  // whose device is no longer listed, has to be re-acquired.
+  if (!micTrackLive() || micDeviceGone()) teardownMic();
   waitForDevice(missing);
 }
 
@@ -297,24 +465,33 @@ async function startMic() {
     checkSecureContext();
     return false;
   }
-  if (micStream && !micTrackLive()) teardownMic();  // cannot be reused
+  if (micStream && (!micTrackLive() || micDeviceGone())) teardownMic();
   if (!micStream) {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    const audio = {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+    };
+    // A remembered device that is not plugged in would make the whole call
+    // fail with OverconstrainedError, so only pin it while it is listed.
+    if (preferredMicId && audioInputs.some((d) => d.deviceId === preferredMicId)) {
+      audio.deviceId = { exact: preferredMicId };
+    }
+    micStream = await navigator.mediaDevices.getUserMedia({ audio });
     for (const t of micStream.getAudioTracks()) {
       // A Bluetooth or USB device can go away without any devicechange
       // event, so the track ending is the reliable signal.
       t.addEventListener("ended", onMicLost);
     }
+    syncDeviceUi();   // name the device the browser actually opened
   }
   if (!audioCtx) {
     audioCtx = new AudioContext({ sampleRate: CLIENT_SR });
+    audioCtx.addEventListener("sinkchange", syncDeviceUi);
     await audioCtx.audioWorklet.addModule("pcm-worklet.js");
   }
   await audioCtx.resume();
   // Autoplay policy keeps the context suspended until a real gesture.
   if (audioCtx.state !== "running") return false;
+  await applyOutputDevice();
   if (!worklet) {
     worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
     worklet.port.onmessage = (e) => {
@@ -353,7 +530,7 @@ async function startSession() {
     if (!ws || ws.readyState > 1) { connect(); return; }
     if (ws.readyState !== 1) return;
     if (!mediaAvailable()) { checkSecureContext(); return; }
-    const status = await deviceStatus().catch(() => null);
+    const status = await refreshDevices().catch(() => null);
     const missing = status ? missingDeviceText(status) : "";
     if (missing) { waitForDevice(missing); return; }
     let ready = false;
@@ -465,6 +642,23 @@ $("pauseBtn").addEventListener("click", () => {
 });
 $("mode").addEventListener("change", (e) => send({ type: "mode", value: e.target.value }));
 
+$("micSelect").addEventListener("change", (e) => {
+  preferredMicId = e.target.value;
+  savePref(PREF_KEY.mic, preferredMicId);
+  // The open track is on the old device, so drop it and let the watchdog
+  // reopen on the new one.
+  if (streaming) stopStreaming();
+  teardownMic();
+  scheduleRecheck(0);
+});
+
+$("spkSelect").addEventListener("change", (e) => {
+  preferredSpkId = e.target.value;
+  savePref(PREF_KEY.spk, preferredSpkId);
+  appliedSpkId = null;   // the same id may still have to be re-applied
+  applyOutputDevice();
+});
+
 /* Modes are free-form in the server config; the dropdown is built from
    GET /modes so a new age group there shows up without touching this
    page. The static options in index.html are only a fetch fallback. */
@@ -489,6 +683,10 @@ if (mediaAvailable()) {
   navigator.mediaDevices.addEventListener("devicechange", () => scheduleRecheck());
 }
 
+preferredMicId = loadPref(PREF_KEY.mic);
+preferredSpkId = loadPref(PREF_KEY.spk);
+
 loadModes().finally(connect);
 checkSecureContext();
+syncDeviceUi();
 scheduleRecheck(WATCHDOG_MS);  // start the periodic look

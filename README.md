@@ -153,6 +153,19 @@ scripts/gen_dev_cert.sh                    # 生成自签证书（SAN 覆盖本�
 `--autoplay-policy=no-user-gesture-required`（并在这次 origin 上永久允许麦克风），
 页面加载后就会自己开麦。
 
+## 音频设备
+
+页面上的“麦克风 / 扬声器”下拉显示当前实际在用的设备，也可以直接指定，选择
+记在 localStorage。默认“自动”：麦克风跟浏览器默认，扬声器跟麦克风所属的
+设备（同一个 `groupId`，即蓝牙耳机的另一半），所以蓝牙耳机重连后声音会一起
+回到耳机，不会留在 HDMI 外放上。判断设备是否还在，除了看 track 状态，也看
+`deviceId` 是否还在 `enumerateDevices()` 的列表里。
+
+切换输出走 `AudioContext.setSinkId()`，播放和采集始终共用同一个
+AudioContext，AEC 的参考信号不受影响。麦克风和扬声器不属于同一个设备时页面
+会提示回声消除变弱，这时 `server/config.yaml` 的 `barge_in_ms` 可能要调大。
+非 Chrome（没有 `setSinkId`）下扬声器下拉会禁用，声音跟随系统默认输出。
+
 ## 测试
 
 ```bash
