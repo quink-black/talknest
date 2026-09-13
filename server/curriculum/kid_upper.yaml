@@ -1,0 +1,104 @@
+# Curriculum for kid_upper mode (10-12, has had some English at school).
+#
+# Same shape as kid.yaml: units in topological order of `after`, `words`
+# is the teaching vocabulary, `patterns` are the sentence frames. These
+# learners can hold a short exchange, so the units lean on sentences
+# rather than single words.
+version: 1
+mode: kid_upper
+units:
+  - id: subjects
+    title: 课程
+    goal: 能说喜欢什么课
+    words: [maths, english, chinese, science, art, music]
+    patterns: ["I like science.", "My favourite subject is art."]
+    after: []
+    sessions: 2
+
+  - id: hobbies
+    title: 爱好
+    goal: 能说自己的爱好
+    words: [hobby, swim, draw, dance, chess, stamp]
+    patterns: ["My hobby is swimming.", "I like drawing."]
+    after: [subjects]
+    sessions: 2
+
+  - id: weekend
+    title: 周末
+    goal: 能说周末做了什么
+    words: [weekend, saturday, sunday, visit, help, homework]
+    patterns: ["I visited my grandma.", "I did my homework."]
+    after: [subjects]
+    sessions: 2
+
+  - id: sports
+    title: 运动
+    goal: 能说会什么运动
+    words: [football, basketball, run, swim, team, match]
+    patterns: ["I play football.", "We won the match."]
+    after: [hobbies]
+    sessions: 2
+
+  - id: ordering
+    title: 点餐
+    goal: 能点简单的东西
+    words: [menu, order, noodles, rice, chicken, water]
+    patterns: ["I would like noodles.", "Can I have water, please?"]
+    after: [weekend]
+    sessions: 2
+
+  - id: seasons
+    title: 季节与天气
+    goal: 能说季节和天气
+    words: [spring, summer, autumn, winter, warm, cool]
+    patterns: ["I like summer.", "It is cool in autumn."]
+    after: [weekend]
+    sessions: 2
+
+  - id: animals
+    title: 动物
+    goal: 能说动物的样子和习性
+    words: [panda, tiger, elephant, monkey, tail, clever]
+    patterns: ["Pandas are cute.", "Monkeys are clever."]
+    after: [hobbies]
+    sessions: 2
+
+  - id: travel
+    title: 旅行
+    goal: 能说去过哪里、怎么去
+    words: [trip, train, plane, ticket, hotel, photo]
+    patterns: ["I went by train.", "We took many photos."]
+    after: [seasons]
+    sessions: 3
+
+  - id: opinions
+    title: 看法
+    goal: 能说喜欢不喜欢、为什么
+    words: [think, because, interesting, boring, easy, difficult]
+    patterns: ["I think it is interesting.", "It is difficult because..."]
+    after: [subjects]
+    sessions: 3
+
+  - id: routine
+    title: 作息
+    goal: 能说一天怎么过
+    words: [usually, morning, breakfast, dinner, bedtime, early]
+    patterns: ["I usually get up early.", "I have breakfast at seven."]
+    after: [weekend]
+    sessions: 2
+
+  - id: plans
+    title: 打算
+    goal: 能说准备做什么
+    words: [plan, tomorrow, holiday, want, hope, join]
+    patterns: ["I want to join you.", "I hope to go."]
+    after: [travel]
+    sessions: 2
+
+  - id: shopping
+    title: 购物
+    goal: 能问价和买东西
+    words: [shop, buy, price, cheap, expensive, size]
+    patterns: ["How much is it?", "It is too expensive."]
+    after: [ordering]
+    sessions: 2

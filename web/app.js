@@ -31,7 +31,8 @@ let replyBubble = null;
 /* Picked in the UI and remembered across reloads. An empty id means auto:
    the microphone follows the browser default, the speaker follows whatever
    device the microphone belongs to. */
-const PREF_KEY = { mic: "talknest.mic", spk: "talknest.spk" };
+const PREF_KEY = { mic: "talknest.mic", spk: "talknest.spk",
+                   learner: "talknest.learner" };
 let audioInputs = [], audioOutputs = [];
 let preferredMicId = "", preferredSpkId = "";
 let appliedSpkId = "";   // null forces applyOutputDevice to try again
@@ -50,6 +51,9 @@ function connect() {
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     setStatus("listening", false);
+    // Learner first: picking one loads the curriculum for whichever mode is
+    // current at that moment, and the mode right after reloads it.
+    send({ type: "learner", value: $("learner").value });
     send({ type: "mode", value: $("mode").value });
     startSession();
   };
@@ -118,6 +122,7 @@ async function onMessage(ev) {
       showMarks(msg.marks);
       setStatus("listening", false);
       replyBubble = null;
+      loadUnits();   // a turn can finish a unit, so the counts moved
       break;
     case "error":
     case "tts_error":
@@ -137,6 +142,11 @@ function addBubble(kind, text) {
 function scrollTranscript() {
   const t = $("transcript");
   t.scrollTop = t.scrollHeight;
+}
+
+function clearTranscript() {
+  $("transcript").innerHTML = "";
+  replyBubble = null;
 }
 
 function showMarks(marks) {
@@ -650,7 +660,25 @@ $("pauseBtn").addEventListener("click", () => {
   if (streaming) pauseSession();
   else startSession();
 });
-$("mode").addEventListener("change", (e) => send({ type: "mode", value: e.target.value }));
+$("mode").addEventListener("change", (e) => {
+  // The server drops the conversation on a mode switch, so the page has to
+  // match it: bubbles the tutor can no longer see would be a lie.
+  clearTranscript();
+  send({ type: "mode", value: e.target.value });
+  loadUnits();
+});
+
+$("learner").addEventListener("change", (e) => {
+  savePref(PREF_KEY.learner, e.target.value);
+  clearTranscript();
+  send({ type: "learner", value: e.target.value });
+  loadUnits();
+});
+
+$("unit").addEventListener("change", (e) => {
+  send({ type: "unit", value: e.target.value });
+  loadUnits();
+});
 
 $("micSelect").addEventListener("change", (e) => {
   preferredMicId = e.target.value;
@@ -668,6 +696,55 @@ $("spkSelect").addEventListener("change", (e) => {
   appliedSpkId = null;   // the same id may still have to be re-applied
   applyOutputDevice();
 });
+
+/* Learners are directories of learner state on the server. The unit list
+   comes back with how many words of each are left, so the parent's picker
+   reads "颜色（2/4）" instead of a bare list of names. */
+async function loadLearners() {
+  try {
+    const r = await fetch("learners");
+    if (!r.ok) return;
+    const data = await r.json();
+    const sel = $("learner");
+    const remembered = loadPref(PREF_KEY.learner);
+    sel.innerHTML = "";
+    for (const name of data.learners) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    }
+    sel.value = data.learners.includes(remembered) ? remembered : data.default;
+  } catch (e) { /* offline or old server: keep whatever is there */ }
+}
+
+async function loadUnits() {
+  const learner = $("learner").value;
+  if (!learner) return;
+  try {
+    const r = await fetch(`learners/${encodeURIComponent(learner)}/units?mode=`
+      + encodeURIComponent($("mode").value));
+    if (!r.ok) return;
+    const data = await r.json();
+    const sel = $("unit");
+    sel.innerHTML = "";
+    const auto = document.createElement("option");
+    auto.value = "";
+    auto.textContent = "自动（按顺序往下走）";
+    sel.appendChild(auto);
+    for (const u of data.units) {
+      const opt = document.createElement("option");
+      opt.value = u.id;
+      opt.textContent = `${u.title}（${u.words - u.left}/${u.words}）`;
+      sel.appendChild(opt);
+    }
+    sel.value = data.current;
+    const current = data.units.find((u) => u.id === data.current);
+    $("unitHint").textContent = current
+      ? `当前：${current.title}，还剩 ${current.left} 个新词`
+      : "当前：自动，取第一个还有新词的单元";
+  } catch (e) { /* offline or old server: keep whatever is there */ }
+}
 
 /* Modes are free-form in the server config; the dropdown is built from
    GET /modes so a new age group there shows up without touching this
@@ -696,7 +773,7 @@ if (mediaAvailable()) {
 preferredMicId = loadPref(PREF_KEY.mic);
 preferredSpkId = loadPref(PREF_KEY.spk);
 
-loadModes().finally(connect);
+loadModes().then(loadLearners).then(loadUnits).finally(connect);
 checkSecureContext();
 syncDeviceUi();
 scheduleRecheck(WATCHDOG_MS);  // start the periodic look

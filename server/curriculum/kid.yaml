@@ -1,6 +1,13 @@
-# Starter curriculum for kid mode (7-10, complete beginner).
-# Units are returned in topological order of `after`, so the automatic
-# "next unit" is simply the first one that still has untaught words.
+# Curriculum for kid mode (7-10, complete beginner).
+#
+# Units come back in topological order of `after`, so the automatic "next
+# unit" is simply the first one that still has untaught words. `words` is
+# the teaching vocabulary; `patterns` are the sentence frames the tutor
+# leans on once the words are there.
+#
+# `untracked` words are taught but not recognised in free speech. Function
+# words like "I" or "what" turn up in almost any English sentence, so
+# counting them would report words as learned that the child never said.
 version: 1
 mode: kid
 units:
@@ -8,8 +15,6 @@ units:
     title: 打招呼与自我介绍
     goal: 能打招呼，能说出自己的名字
     words: [hello, hi, bye, name, I, my]
-    # Taught as part of "My name is ___", but too common to count: they turn
-    # up in sentences that have nothing to do with this unit.
     untracked: [i, my]
     patterns: ["Hello!", "My name is ___.", "Bye bye!"]
     after: []
@@ -18,15 +23,15 @@ units:
   - id: colors
     title: 颜色
     goal: 能说出并指认常见颜色
-    words: [red, yellow, blue, green]
+    words: [red, yellow, blue, green, black, white]
     patterns: ["It is red.", "I like blue."]
     after: [greetings]
     sessions: 2
 
-  - id: numbers
-    title: 数字
-    goal: 能数到五
-    words: [one, two, three, four, five]
+  - id: numbers_1
+    title: 数字 1-6
+    goal: 能从一数到六
+    words: [one, two, three, four, five, six]
     patterns: ["One, two, three!"]
     after: [greetings]
     sessions: 2
@@ -34,7 +39,7 @@ units:
   - id: animals
     title: 动物
     goal: 能说出常见动物的名字
-    words: [cat, dog, rabbit, bird]
+    words: [cat, dog, rabbit, bird, fish, panda]
     patterns: ["It is a cat.", "I have a dog."]
     after: [colors]
     sessions: 3
@@ -42,7 +47,169 @@ units:
   - id: food
     title: 吃的
     goal: 能说出常见食物的名字
-    words: [apple, banana, milk, egg]
+    words: [apple, banana, milk, egg, bread, rice]
     patterns: ["I like apples.", "I want milk."]
-    after: [numbers]
+    after: [numbers_1]
     sessions: 3
+
+  - id: family
+    title: 家人
+    goal: 能说出家里人怎么讲
+    words: [mother, father, sister, brother, grandma, grandpa]
+    patterns: ["This is my mother.", "I have a sister."]
+    after: [greetings]
+    sessions: 2
+
+  - id: body
+    title: 身体
+    goal: 能说出身体部位
+    words: [head, hand, eye, nose, mouth, ear]
+    patterns: ["This is my nose.", "Wash your hands."]
+    after: [family]
+    sessions: 2
+
+  - id: toys
+    title: 玩具
+    goal: 能说出玩具的名字
+    words: [ball, doll, car, kite, bear, robot]
+    patterns: ["I have a ball.", "Let us play."]
+    after: [colors]
+    sessions: 2
+
+  - id: school
+    title: 学校
+    goal: 能说出学习用品
+    words: [school, book, pen, bag, desk, teacher]
+    patterns: ["This is my book.", "I go to school."]
+    after: [family]
+    sessions: 2
+
+  - id: numbers_2
+    title: 数字 7-10
+    goal: 能接着数到十
+    words: [seven, eight, nine, ten, zero]
+    patterns: ["I am eight."]
+    after: [numbers_1]
+    sessions: 2
+
+  - id: clothes
+    title: 衣服
+    goal: 能说出常见衣物
+    words: [hat, coat, shoe, sock, shirt, dress]
+    patterns: ["Put on your coat.", "I like this hat."]
+    after: [colors]
+    sessions: 2
+
+  - id: drinks
+    title: 喝的
+    goal: 能说出想喝什么
+    words: [water, juice, tea, soup, cup, bottle]
+    patterns: ["I want water.", "Here is your juice."]
+    after: [food]
+    sessions: 2
+
+  - id: fruit
+    title: 水果
+    goal: 能说出常见水果
+    words: [orange, pear, grape, peach, lemon, cherry]
+    patterns: ["I like grapes.", "It is a pear."]
+    after: [food]
+    sessions: 2
+
+  - id: weather
+    title: 天气
+    goal: 能说天气冷热晴雨
+    words: [sun, rain, wind, snow, hot, cold]
+    patterns: ["It is hot.", "I like the rain."]
+    after: [colors]
+    sessions: 2
+
+  - id: home
+    title: 家里
+    goal: 能说出家里常见的东西
+    words: [bed, door, table, chair, window, room]
+    patterns: ["This is my room.", "Open the door."]
+    after: [family]
+    sessions: 2
+
+  - id: actions
+    title: 动作
+    goal: 能说简单的动作
+    words: [run, jump, walk, sit, eat, drink]
+    patterns: ["I can run.", "Sit down, please."]
+    after: [body]
+    sessions: 3
+
+  - id: feelings
+    title: 心情
+    goal: 能说出自己的感受
+    words: [happy, sad, hungry, tired, angry, scared]
+    patterns: ["I am happy.", "Are you tired?"]
+    after: [actions]
+    sessions: 2
+
+  - id: size
+    title: 大小长短
+    goal: 能比较大小和长短
+    words: [big, small, long, short, tall, new]
+    patterns: ["It is big.", "I want the small one."]
+    after: [colors]
+    sessions: 2
+
+  - id: places
+    title: 在哪儿
+    goal: 能说东西在哪里
+    words: [in, on, under, here, there, up]
+    untracked: [in, on]
+    patterns: ["It is on the table.", "Look up!"]
+    after: [home]
+    sessions: 2
+
+  - id: time
+    title: 时间
+    goal: 能说今天明天、早晚
+    words: [today, tomorrow, morning, night, now, again]
+    patterns: ["See you tomorrow.", "Good morning!"]
+    after: [numbers_2]
+    sessions: 2
+
+  - id: play
+    title: 玩什么
+    goal: 能说自己玩什么
+    words: [play, game, song, dance, draw, read]
+    patterns: ["Let us play a game.", "I can draw."]
+    after: [toys]
+    sessions: 2
+
+  - id: transport
+    title: 出行
+    goal: 能说怎么去
+    words: [bus, bike, train, plane, boat, road]
+    patterns: ["I go by bus.", "Look at the train."]
+    after: [toys]
+    sessions: 2
+
+  - id: nature
+    title: 大自然
+    goal: 能说看得见的自然事物
+    words: [tree, flower, grass, river, sky, star]
+    patterns: ["Look at the tree.", "The sky is blue."]
+    after: [animals]
+    sessions: 2
+
+  - id: questions
+    title: 提问
+    goal: 会问和会答简单的问题
+    words: [what, where, who, how, yes, no]
+    untracked: [what, where, who, how, yes, no]
+    patterns: ["What is it?", "Yes, it is."]
+    after: [greetings]
+    sessions: 3
+
+  - id: manners
+    title: 礼貌用语
+    goal: 会说请、谢谢、对不起
+    words: [please, thanks, sorry, welcome, excuse, goodbye]
+    patterns: ["Thank you.", "Sorry!", "You are welcome."]
+    after: [greetings]
+    sessions: 2

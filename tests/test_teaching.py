@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
 import pytest
+from fastapi.testclient import TestClient
 
 from orchestrator import main
 from orchestrator.config import load
@@ -283,6 +284,28 @@ class TestTurnPrompt:
         session.load_curriculum()
         assert session.history == []
         assert session.units
+
+
+class TestEndpoints:
+    def test_learners_lists_the_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        data = TestClient(main.app).get("/learners").json()
+        assert data["default"] == main.DEFAULT_LEARNER
+        assert main.DEFAULT_LEARNER in data["learners"]
+
+    def test_units_report_words_left(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        data = TestClient(main.app).get("/learners/tester/units?mode=kid").json()
+        assert data["units"][0]["id"] == "greetings"
+        assert data["units"][0]["left"] == data["units"][0]["words"]
+        assert data["current"] == ""
+
+    def test_learner_names_cannot_escape_the_data_dir(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        TestClient(main.app).get("/learners/..escaped/units?mode=kid")
+        assert not (tmp_path.parent / "escaped").exists()
+        assert (tmp_path / "learners" / "escaped").is_dir()
 
 
 class TestTeachingConfig:

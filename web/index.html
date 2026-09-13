@@ -33,6 +33,10 @@
             border-radius: 8px; padding: .7rem 1rem; margin: 1rem 0;
             font-size: .9rem; line-height: 1.5; }
   #banner code { background: #f4e9bf; padding: 0 .3em; border-radius: 4px; }
+  #parent { margin: .6rem 0 1rem; border: 1px solid #e2e0da; border-radius: 10px;
+            background: #fff; padding: .6rem .8rem; }
+  #parent summary { cursor: pointer; font-size: .95rem; color: #555; }
+  .prow { display: flex; align-items: center; gap: .6rem; margin-top: .6rem; }
 </style>
 </head>
 <body>
@@ -45,6 +49,7 @@
 <div id="banner"></div>
 
 <div class="controls">
+  <select id="learner"></select>
   <!-- Fallback options; app.js replaces them from GET /modes. -->
   <select id="mode">
     <option value="kid">儿童 (7-10岁)</option>
@@ -54,6 +59,16 @@
   <button id="interruptBtn">停下</button>
   <button id="pauseBtn">暂停</button>
 </div>
+
+<details id="parent">
+  <summary>家长区</summary>
+  <div class="prow">
+    <label class="dev">学习单元 <select id="unit"></select></label>
+    <span class="hint" id="unitHint"></span>
+  </div>
+  <p class="hint">选了单元就只教这个单元的新词（想重复练或跳过都可以），不选
+  则按大纲顺序自动往下走。切换“我是谁”或模式会清空当前对话。</p>
+</details>
 
 <div class="devices">
   <label class="dev">麦克风 <select id="micSelect"></select></label>

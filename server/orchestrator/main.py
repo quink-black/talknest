@@ -197,6 +197,7 @@ class Session:
         self.units: list = []
         self.vocab: set[str] = set()
         self.tracked: set[str] = set()
+        self.plan = state_block.Plan()
         self.session_id: int | None = None
         if TEACHING:
             self.open_learner(DEFAULT_LEARNER)
@@ -322,6 +323,9 @@ def record_turn(sess: Session, learner_text: str, spoken: list[str],
     if sess.store is None or sess.session_id is None:
         return
     taught = match.find(" ".join(spoken), sess.tracked)
+    # Words too common to recognise in speech are credited when the plan
+    # asked for them: the tutor was told to teach them, so they came up.
+    taught += [w for w in sess.plan.new if w not in sess.tracked]
     heard = match.find(learner_text, sess.tracked)
     sess.store.touch(taught, sess.session_id, practiced=False)
     sess.store.touch(heard, sess.session_id, practiced=True)
@@ -337,10 +341,11 @@ def build_messages(sess: Session, text: str) -> list[dict]:
     to reuse the cached prefix, and a stack of stale plans would tell the
     tutor to re-teach what it just taught.
     """
-    block = ""
+    plan = state_block.Plan()
     if sess.store is not None and sess.units:
-        block = state_block.render(
-            scheduler.plan(sess.store, sess.units, BLOCK_CAPS), BLOCK_CAPS)
+        plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS)
+    sess.plan = plan   # the turn's bookkeeping credits what was asked for
+    block = state_block.render(plan, BLOCK_CAPS)
     messages = [{"role": "system", "content": sess.system_prompt()}]
     messages += sess.history[-HISTORY_MESSAGES:]
     messages.append(
@@ -552,6 +557,41 @@ async def get_modes():
             {"name": name, "label": m.get("label", name)}
             for name, m in cfg["modes"].items()
         ],
+    }
+
+
+@app.get("/learners")
+async def get_learners():
+    """Learner profiles on this machine, for the client's dropdown."""
+    root = data_root() / "learners"
+    names = sorted(p.name for p in root.glob("*") if (p / "state.sqlite").exists())
+    if DEFAULT_LEARNER not in names:
+        names.insert(0, DEFAULT_LEARNER)
+    return {"default": DEFAULT_LEARNER, "learners": names}
+
+
+@app.get("/learners/{learner}/units")
+async def get_units(learner: str, mode: str = ""):
+    """Units of one mode, each with the words left to teach.
+
+    The parent's unit picker is built from this: a unit is done when it has
+    no untaught words left, which is the same test the scheduler uses.
+    """
+    mode = mode if mode in cfg["modes"] else DEFAULT_MODE
+    name = cfg["modes"][mode].get("curriculum")
+    units = curriculum.load(name) if name else []
+    store = Store(slug(learner), data_root())
+    try:
+        store.sync_units(units)
+        left = {u.id: len(store.new_in_unit(u.id, len(u.words))) for u in units}
+        current = store.get_setting(scheduler.CURRENT_UNIT) or ""
+    finally:
+        store.close()
+    return {
+        "mode": mode,
+        "current": current,
+        "units": [{"id": u.id, "title": u.title, "words": len(u.words),
+                   "left": left[u.id]} for u in units],
     }
 
 
