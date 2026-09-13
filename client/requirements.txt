@@ -1,7 +1,8 @@
+# Requires Python >= 3.10 (PEP 604 unions throughout the client).
 numpy>=1.26
 sounddevice>=0.5
-websockets>=12
-soxr>=0.5        # high quality resampling; linear interpolation is the fallback
+websockets>=13    # connect(proxy=None) to bypass ambient proxy env
+soxr>=0.5         # ResampleStream for chunked streams; linear fallback if absent
 
 # Optional, only for --aec dtln:
 #   ai-edge-litert>=1.3   (tflite runtime; tflite-runtime has no 3.12 wheel)

@@ -4,9 +4,11 @@ import argparse
 import asyncio
 import os
 import pathlib
+import signal
 import ssl
 import sys
 import threading
+import time
 import urllib.request
 
 import numpy as np
@@ -14,7 +16,7 @@ import numpy as np
 from .aec import DtlnAec, EchoCanceller, NullAec, erle_db
 from .audio import AudioEngine, read_wav_mono, resample
 from .devices import (default_route_is_bluetooth, format_devices, list_devices,
-                      pair, same_physical_device)
+                      pair, pick_device, same_physical_device, still_present)
 from .portaudio import sd, require_portaudio
 from .session import Session
 
@@ -55,7 +57,11 @@ def model_present(prefix: str) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="talknest-cli", description="Headless talknest voice client")
-    p.add_argument("--url", default=None, help=f"websocket url (default {default_url()})")
+    # help must stay static: default_url() probes the network and would run
+    # on every invocation, including --help and --list-devices.
+    p.add_argument("--url", default=None,
+                   help="websocket url (default: auto-detect ws/wss on "
+                        "127.0.0.1:${TALKNEST_PORT:-8890}/ws)")
     p.add_argument("--mode", default="kid", help="conversation mode")
     p.add_argument("--input", default=None, help="capture device (index or name substring)")
     p.add_argument("--output", default=None, help="playback device (index or name substring)")
@@ -72,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
                         f"{LIVE_DELAY_MS})")
     p.add_argument("--half-duplex", action="store_true",
                    help="mute the microphone while the assistant speaks")
+    p.add_argument("--device-poll-s", type=float, default=2.0,
+                   help="exit when a selected device disappears (0 disables, "
+                        "default 2.0)")
+    p.add_argument("--tls-ca", default=None, metavar="PEM",
+                   help="CA bundle to verify the wss connection "
+                        "(default: no verification, for self-signed certs)")
     p.add_argument("--aec-eval", nargs=2, metavar=("REF_WAV", "MIC_WAV"),
                    help="offline ERLE for a recorded loop")
     p.add_argument("--aec-bench", action="store_true",
@@ -88,7 +100,10 @@ def build_aec(args) -> EchoCanceller:
     except Exception as exc:
         if args.aec == "dtln":
             raise SystemExit(f"[aec] cannot load DTLN-aec from {prefix}: {exc}")
-        print(f"[aec] DTLN-aec unavailable ({exc}); running half duplex")
+        print(f"[aec] DTLN-aec unavailable ({exc}); running half duplex", flush=True)
+        if not model_present(prefix) and not os.environ.get("TALKNEST_MODEL_ROOT"):
+            print("[aec] hint: set TALKNEST_MODEL_ROOT to the directory "
+                  "containing dtln-aec/*.tflite", flush=True)
         return NullAec()
 
 
@@ -112,6 +127,30 @@ def _run_through_aec(aec: EchoCanceller, ref: np.ndarray, mic: np.ndarray,
     return erle_db(mic[:n], residual[:n])
 
 
+def _sweep_delay(aec: EchoCanceller, ref: np.ndarray, mic: np.ndarray,
+                 step: int = 20, cap_ms: int = 2000) -> tuple[int, float]:
+    """Sweep the compensation and report the best delay.
+
+    The window keeps extending while the peak sits at its upper edge: HFP
+    loop delays reach ~1.1 s, far past the first 400 ms window.
+    """
+    lo, hi = 0, 400
+    best_d, best_db = 0, -np.inf
+    while True:
+        sweep = [(d, _run_through_aec(aec, ref, mic, d))
+                 for d in range(lo, hi + 1, step)]
+        for d, db in sweep:
+            print(f"  delay_ms={d:<4} erle={db:6.1f} dB", flush=True)
+        d_best, db_best = max(sweep, key=lambda x: x[1])
+        if db_best > best_db:
+            best_d, best_db = d_best, db_best
+        # Interior peak (or the hard cap) ends the search; measured shape:
+        # under-compensation degrades gently, over-compensation collapses.
+        if d_best <= hi - 3 * step or hi >= cap_ms:
+            return best_d, best_db
+        lo, hi = hi + step, min(hi + 400, cap_ms)
+
+
 def run_aec_eval(ref_path: str, mic_path: str, aec: EchoCanceller,
                  delay_ms: int | None) -> int:
     """Replay a recorded loop through the backend and report ERLE.
@@ -125,11 +164,7 @@ def run_aec_eval(ref_path: str, mic_path: str, aec: EchoCanceller,
     mic = resample(mic, mic_sr, aec.proc_sr)
     n = min(len(ref), len(mic))
     if delay_ms is None:
-        sweep = [(d, _run_through_aec(aec, ref[:n], mic[:n], d))
-                 for d in range(0, 401, 20)]
-        for d, db in sweep:
-            print(f"  delay_ms={d:<4} erle={db:6.1f} dB")
-        best_d, best_db = max(sweep, key=lambda x: x[1])
+        best_d, best_db = _sweep_delay(aec, ref[:n], mic[:n])
         print(f"backend={aec.name} proc_sr={aec.proc_sr} "
               f"best delay_ms={best_d} erle={best_db:.1f} dB")
     else:
@@ -155,7 +190,14 @@ def run_aec_bench(in_dev, out_dev, aec: EchoCanceller, delay_ms: int | None,
     the compensation and reports the peak instead of trusting one value.
     """
     require_portaudio()
-    sr = int(sd.query_devices(in_dev.index, "input")["default_samplerate"])
+    in_sr = int(sd.query_devices(in_dev.index, "input")["default_samplerate"])
+    out_sr = int(sd.query_devices(out_dev.index, "output")["default_samplerate"])
+    if in_sr != out_sr:
+        # playrec needs one rate for both directions of the same call.
+        raise SystemExit(f"[bench] input and output default rates differ "
+                         f"({in_sr} vs {out_sr}); run the bench on a paired "
+                         "device or pass --input/--output with matching rates")
+    sr = in_sr
     n = int(seconds * sr)
     rng = np.random.default_rng(0)
     # Speech-shaped noise: white noise rolled off towards high frequencies.
@@ -203,12 +245,36 @@ def _keyboard(session: Session, loop: asyncio.AbstractEventLoop) -> None:
             loop.call_soon_threadsafe(session.stop)
             return
         asyncio.run_coroutine_threadsafe(session.interrupt(), loop)
+    # stdin EOF (nohup, systemd, CI): the keyboard is gone, say how to stop.
+    print("[input] stdin closed; send SIGTERM or SIGINT to quit", flush=True)
+
+
+def _watch_devices(session: Session, in_idx, out_idx, interval: float,
+                   loop: asyncio.AbstractEventLoop) -> None:
+    """Exit when a selected device disappears (bluetooth blips out, USB
+    unplug). A supervisor such as systemd restarts the client, which then
+    re-pairs with whatever is present."""
+    while not session._stop:
+        time.sleep(interval)
+        gone = [kind for idx, kind in ((in_idx, "input"), (out_idx, "output"))
+                if idx is not None and not still_present(idx, kind)]
+        if gone:
+            print(f"[devices] {', '.join(gone)} device disappeared; exiting",
+                  flush=True)
+            loop.call_soon_threadsafe(session.stop)
+            return
 
 
 async def _run(args, aec: EchoCanceller) -> None:
     in_dev = out_dev = None
-    if not args.input_file or not args.output_file:
+    if not args.input_file and not args.output_file:
         in_dev, out_dev = pair(args.input, args.output)
+    elif not args.input_file:
+        # File on the other side: resolve only this side, so a machine
+        # without a microphone can still play --input-file conversations.
+        in_dev = pick_device(args.input, "input")
+    elif not args.output_file:
+        out_dev = pick_device(args.output, "output")
         if (args.aec == "auto" and aec.name != "none"
                 and _over_bluetooth(in_dev, out_dev, args)):
             # Measured on HFP hardware: per-second loop delays wander across
@@ -231,16 +297,28 @@ async def _run(args, aec: EchoCanceller) -> None:
           f"out={_describe(out_dev, 'output')} "
           f"rates={engine.in_sr}/{engine.out_sr} aec={aec.name}", flush=True)
     if (in_dev is not None and out_dev is not None
-            and not same_physical_device(in_dev.index, out_dev.index)):
+            and not same_physical_device(in_dev, out_dev)):
         print("[audio] warning: mic and speaker are not the same physical "
               "device; echo cancellation will be weaker", flush=True)
 
     # Half duplex is mandatory without a canceller: the speaker feeds the mic.
     half_duplex = args.half_duplex or aec.name == "none"
     session = Session(args.url or default_url(), engine, mode=args.mode,
-                      half_duplex=half_duplex)
+                      half_duplex=half_duplex, ca_file=args.tls_ca)
     loop = asyncio.get_running_loop()
     threading.Thread(target=_keyboard, args=(session, loop), daemon=True).start()
+    if args.device_poll_s > 0 and (in_dev is not None or out_dev is not None):
+        threading.Thread(
+            target=_watch_devices,
+            args=(session, in_dev.index if in_dev else None,
+                  out_dev.index if out_dev else None,
+                  args.device_poll_s, loop),
+            daemon=True).start()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, session.stop)
+        except NotImplementedError:
+            pass  # not on this platform/event loop
     try:
         await session.run()
     finally:

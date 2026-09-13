@@ -3,8 +3,9 @@
 Two rules dominate this file:
 
   1. `playback ended` must be sent exactly once per turn, after the queue has
-     really drained. The server clears `Session.speaking` only there; missing
-     it makes every later utterance look like the assistant's own echo.
+     really drained. The server clears `Session.speaking` there and on turn
+     cancellation; missing it makes every later utterance look like the
+     assistant's own echo until the next cancellation.
   2. Half duplex gates the upstream at the client, it does not send `stop`.
      `stop` cancels the running turn on the server, which would cut the reply
      off after its first audio chunk.
@@ -21,7 +22,11 @@ import websockets
 from . import CLIENT_SR
 
 
-def _ssl_context():
+def _ssl_context(ca_file: str | None) -> ssl.SSLContext:
+    if ca_file:
+        return ssl.create_default_context(cafile=ca_file)
+    # Self-signed dev deployments (certs/dev.pem) are the norm here, so
+    # verification is off unless --tls-ca names a bundle to trust.
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -29,13 +34,15 @@ def _ssl_context():
 
 
 class Session:
-    def __init__(self, url: str, engine, mode: str = "kid",
-                 half_duplex: bool = False, reconnect_delay: float = 3.0):
+    def __init__(self, url: str, engine, mode: str,
+                 half_duplex: bool = False, reconnect_delay: float = 3.0,
+                 ca_file: str | None = None):
         self.url = url
         self.engine = engine
         self.mode = mode
         self.half_duplex = half_duplex
         self.reconnect_delay = reconnect_delay
+        self.ca_file = ca_file
         self.ws = None
         self.play_sr = CLIENT_SR
         self._stop = False
@@ -58,16 +65,25 @@ class Session:
                 print(f"[ws] {exc}; retrying in {self.reconnect_delay}s", flush=True)
             except websockets.WebSocketException as exc:
                 print(f"[ws] {exc}; retrying in {self.reconnect_delay}s", flush=True)
+            if self._stop:
+                break
             await asyncio.sleep(self.reconnect_delay)
 
     async def _serve_once(self) -> None:
         kwargs = {"max_size": 8 * 1024 * 1024, "ping_interval": 20,
                   "ping_timeout": 20, "proxy": None}
         if self.url.startswith("wss://"):
-            kwargs["ssl"] = _ssl_context()
+            kwargs["ssl"] = _ssl_context(self.ca_file)
         async with websockets.connect(self.url, **kwargs) as ws:
             self.ws = ws
             self._gate_open = True
+            # The new socket is a new server session. Stale upstream frames
+            # would be sent at 1x and lag behind real time forever, and
+            # leftover reply audio belongs to the dead connection.
+            self.engine.upstream_clear()
+            self.engine.reset_playback()
+            self._playback_active = False
+            self._audio_end = False
             await self._send({"type": "mode", "value": self.mode})
             await self._send({"type": "start"})
             print(f"[ws] connected to {self.url}", flush=True)
@@ -153,8 +169,16 @@ class Session:
             self._audio_end = True
         elif kind == "stop_playback":
             print(f"\n[stop_playback reason={data.get('reason')}]", flush=True)
+            # Clear the flags here, not inside a task: a new audio_start for
+            # the next turn could otherwise race ahead of it and have its
+            # playback state wiped before any audio arrives.
+            self._playback_active = False
+            self._audio_end = False
             self.engine.clear_playback()
-            asyncio.create_task(self._finish_playback())
+            self.engine.reset_playback()
+            if self.half_duplex:
+                self._gate_open = True
+            asyncio.create_task(self._send({"type": "playback", "value": "ended"}))
         elif kind == "reply_done":
             marks = data.get("marks") or {}
             if marks:

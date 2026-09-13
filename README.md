@@ -158,6 +158,26 @@ scripts/gen_dev_cert.sh                    # 生成自签证书（SAN 覆盖本�
 WSOLA 变速实现（`server/orchestrator/tts.py`），在语音上有可闻伪影，
 默认不启用。
 
+## CLI 客户端（headless）
+
+没有浏览器也能用：`client/` 下有一个终端客户端，面向"任何带音频输入输出
+的 Linux 机器，从另一台设备 SSH 进来用"的形态（树莓派是目标形态之一）。
+
+```bash
+pip install -r client/requirements.txt   # 需要 libportaudio2；Python >= 3.10
+scripts/talknest-cli                     # 一条命令：自动 venv、自动 ws/wss
+scripts/talknest-cli --list-devices      # 看设备
+scripts/talknest-cli --input hw:2,0 --output hw:2,0   # 手动指定设备
+```
+
+回声取消按设备类型自动选择（`--aec auto`，默认）：蓝牙 HFP 设备自动降级
+为半双工（HFP 时延抖动实测会让任何参考对齐型 AEC 失效），其余设备用
+进程内 DTLN-AEC 神经网络（非 WebRTC 路线，TFLite，模型见
+[client/docs/bench/cli-aec.md](docs/bench/cli-aec.md)）；`--aec none`
+强制半双工。麦克风/扬声器来自文件（`--input-file`/`--output-file`）时
+不需要声卡，可做离线回归。实测记录见
+[docs/bench/cli-aec.md](docs/bench/cli-aec.md)。
+
 ## 音频设备
 
 页面上的“麦克风 / 扬声器”下拉显示当前实际在用的设备，也可以直接指定，
@@ -176,6 +196,7 @@ AEC 的参考信号不受影响。
 server/orchestrator/   会话编排与语音管线（FastAPI + WebSocket）
 server/services/       各推理服务启动/停止脚本与 TTS sidecar
 web/                   纯 JS 前端（getUserMedia 常驻采集 + 队列播放）
+client/                终端客户端（headless，见上文"CLI 客户端"）
 scripts/               llama.cpp 启动器、tmux/systemd 编排、基准脚本
 tests/                 单元测试 + 服务探针 + 全链路冒烟
 docs/                  设计文档与实测报告

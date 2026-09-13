@@ -14,7 +14,8 @@ from .portaudio import sd, require_portaudio
 
 _HW_RE = re.compile(r"hw:(\d+)(?:,(\d+))?")
 _BUS_RE = re.compile(r"\b((?:pci|usb)-[0-9a-zA-Z._:-]+)")
-_MAC_RE = re.compile(r"bluez_(?:input|output)\.([0-9A-Fa-f_]+)")
+# Some hosts use underscore MACs (bluez_input.51_60_...), others colons.
+_MAC_RE = re.compile(r"bluez_(?:input|output)\.([0-9A-Fa-f_:]+)")
 
 
 class Device:
@@ -48,7 +49,7 @@ def _physical_key(name: str, hostapi: str) -> str:
         return f"alsa-card:{m.group(1)}"
     m = _MAC_RE.search(name)  # the two halves of one bluetooth device
     if m:
-        return f"bluez:{m.group(1).lower()}"
+        return f"bluez:{m.group(1).replace(':', '').lower()}"
     m = _BUS_RE.search(name)
     if m:
         return m.group(1)
@@ -82,13 +83,31 @@ def find(spec: str, kind: str) -> int | None:
         wanted = [d for d in devices if d.is_input]
     else:
         wanted = [d for d in devices if d.is_output]
-    if spec.isdigit() and int(spec) in {d.index for d in wanted}:
-        return int(spec)
+    if spec.isdigit():
+        # An index is a concrete request: if it is not such a device, say so
+        # instead of falling through to "name contains the digits".
+        idx = int(spec)
+        return idx if any(d.index == idx for d in wanted) else None
     needle = spec.lower()
     for d in wanted:
         if needle in d.name.lower():
             return d.index
     return None
+
+
+def pick_device(spec: str | None, kind: str):
+    """Resolve one side of the pair; None means the system default.
+
+    Used when the other side is a file (--input-file on a mic-less machine).
+    """
+    devices = list_devices()
+    wanted = [d for d in devices
+              if (d.is_input if kind == "input" else d.is_output)]
+    if not wanted:
+        raise SystemExit(f"[devices] no usable {kind} device found")
+    if spec:
+        return _resolve(spec, wanted, kind)
+    return _prefer_default(wanted, kind)
 
 
 def pair(input_spec: str | None = None, output_spec: str | None = None) -> tuple:
@@ -99,15 +118,21 @@ def pair(input_spec: str | None = None, output_spec: str | None = None) -> tuple
     if not inputs or not outputs:
         raise SystemExit("[devices] no usable input and output pair found")
 
+    # Monitor sources (e.g. "HDA NVidia: HDMI 1 Monitor") replay system
+    # output instead of capturing a microphone; never auto-pick one.
+    real = [d for d in inputs if "monitor" not in d.name.lower()]
+    if real:
+        inputs = real
+
     in_dev = _resolve(input_spec, inputs, "input") if input_spec else None
     out_dev = _resolve(output_spec, outputs, "output") if output_spec else None
     if in_dev is not None and out_dev is not None:
         return in_dev, out_dev
 
     if in_dev is None:
-        in_dev = _pair_source(inputs, out_dev) or _prefer_default(inputs)
+        in_dev = _pair_source(inputs, out_dev) or _prefer_default(inputs, "input")
     if out_dev is None:
-        out_dev = _pair_source(outputs, in_dev) or _prefer_default(outputs)
+        out_dev = _pair_source(outputs, in_dev) or _prefer_default(outputs, "output")
     return in_dev, out_dev
 
 
@@ -131,9 +156,12 @@ def _pair_source(candidates: list[Device], other: Device | None) -> Device | Non
     return None
 
 
-def _prefer_default(candidates: list[Device]) -> Device:
+def _prefer_default(candidates: list[Device], kind: str) -> Device:
+    # sd.default.device is (input_index, output_index); a duplex candidate
+    # in the list must not decide which slot to read.
+    slot = 0 if kind == "input" else 1
     try:
-        default_index = sd.default.device[0 if candidates[0].is_input else 1]
+        default_index = sd.default.device[slot]
         for d in candidates:
             if d.index == default_index:
                 return d
@@ -142,10 +170,7 @@ def _prefer_default(candidates: list[Device]) -> Device:
     return candidates[0]
 
 
-def same_physical_device(in_dev, out_dev) -> bool:
-    inputs = {d.index: d for d in list_devices() if d.is_input}
-    outputs = {d.index: d for d in list_devices() if d.is_output}
-    a, b = inputs.get(in_dev), outputs.get(out_dev)
+def same_physical_device(a: Device, b: Device) -> bool:
     return bool(a and b and a.key == b.key)
 
 
@@ -162,7 +187,7 @@ def default_route_is_bluetooth() -> bool:
             r = subprocess.run(["pactl", f"get-default-{kind}"],
                                capture_output=True, text=True, timeout=2)
         except (OSError, subprocess.TimeoutExpired):
-            return False
+            continue  # sink may be unreachable while source is not
         if r.returncode == 0 and "bluez" in r.stdout.strip().lower():
             return True
     return False

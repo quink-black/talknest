@@ -7,7 +7,9 @@ different time than it is consumed.
 
 Alignment is by sample count, not by wall clock: capture and playback run on
 the same device clock, so a fixed pipeline delay turns into a fixed number of
-leading zero reference samples.
+leading zero reference samples. This only holds while the reference stream is
+continuous -- silence must be pushed too, or every later playback shifts
+against the mic stream and the compensation is lost.
 """
 
 import numpy as np
