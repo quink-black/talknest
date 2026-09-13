@@ -276,6 +276,9 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
     except Exception as e:  # keep the socket alive; surface the error
         queue.put_nowait(None)
         await send_json(ws, {"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
+        # The turn is over either way. Without this the client keeps the
+        # reply bubble open and its status frozen on a reply that died.
+        await send_json(ws, {"type": "reply_done", "marks": marks})
     finally:
         worker.cancel()
         if not cancel.is_set():
