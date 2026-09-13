@@ -13,6 +13,7 @@ const STATUS_TEXT = {
   listening: "直接说话就行",
   hearing: "我在听…",
   thinking: "让我想想…",
+  preparing: "马上就说…",
   speaking: "我在说…",
 };
 
@@ -80,10 +81,16 @@ async function onMessage(ev) {
       break;
     case "user_text":
       addBubble("user", msg.text);
+      // Text takes a moment to arrive while audio takes longer still, so
+      // the empty bubble has to look alive or the page reads as broken.
       replyBubble = addBubble("reply", "");
+      replyBubble.classList.add("typing");
       break;
     case "reply_delta":
-      if (replyBubble) replyBubble.textContent += msg.text;
+      if (replyBubble) {
+        replyBubble.classList.remove("typing");
+        replyBubble.textContent += msg.text;
+      }
       scrollTranscript();
       break;
     case "audio_start":
@@ -103,6 +110,9 @@ async function onMessage(ev) {
     case "interrupted":
       stopPlayback();
       reportPlaybackEnded();
+      // No further deltas are coming for this turn, so the placeholder
+      // must not keep blinking under whatever text did arrive.
+      if (replyBubble) { replyBubble.classList.remove("typing"); replyBubble = null; }
       break;
     case "reply_done":
       showMarks(msg.marks);
@@ -132,7 +142,7 @@ function scrollTranscript() {
 function showMarks(marks) {
   if (!marks || !Object.keys(marks).length) return;
   const row = document.createElement("tr");
-  row.innerHTML = ["asr_done", "tts_first_audio"]
+  row.innerHTML = ["asr_done", "llm_first_sentence", "tts_first_audio"]
     .map((k) => `<td>${marks[k] != null ? marks[k] + " ms" : "—"}</td>`).join("");
   $("marksBody").appendChild(row);
 }

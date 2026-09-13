@@ -38,9 +38,14 @@ llm = LLMClient(
     cfg["llm"].get("sampling", {}),
 )
 asr = ASRClient(cfg["asr"]["base_url"], cfg["asr"]["model"])
-tts = TTSClient(cfg["tts"]["base_url"], cfg["tts"]["model"], cfg["tts"]["voice"])
+tts = TTSClient(cfg["tts"]["base_url"], cfg["tts"]["model"], cfg["tts"]["voice"],
+                stream=bool(cfg["tts"].get("stream", True)))
 
-SENTENCE_MIN_CHARS = 24
+# Chunks shorter than this merge into the next one: one TTS round trip per
+# two-word fragment costs more than it saves. It has to stay low enough
+# that an ordinary kid-mode sentence ("兔子的英文是 rabbit。", 14 chars)
+# goes out on its own instead of waiting for the sentence after it.
+SENTENCE_MIN_CHARS = int(cfg.get("reply", {}).get("chunk_min_chars", 10))
 CLIENT_SR = 24000  # browser captures at 24 kHz: Qwen3-ASR's native rate
 # (16 kHz input makes Qwen3-ASR fail; 24 kHz matches the Qwen3-Omni
 # audio frontend. VAD runs on an internal 16 kHz copy.)
@@ -55,6 +60,11 @@ VAD_CFG = cfg["vad"]
 BARGE_IN_MS = VAD_CFG.get("barge_in_ms", 400)
 BARGE_IN_GRACE_MS = VAD_CFG.get("playback_grace_ms", 300)
 BARGE_IN_THRESHOLD = VAD_CFG.get("barge_in_threshold", 0.75)
+# Interrupting a turn that has produced no audio yet needs a longer voiced
+# run than interrupting one that is playing: the assistant is silent, so
+# what the mic hears is a real question, but a child who is only waiting
+# says things like "喂?" that must not throw the answer away.
+PENDING_BARGE_IN_MS = VAD_CFG.get("pending_barge_in_ms", 1200)
 
 # Fallback chain: configured default, else the first configured mode.
 DEFAULT_MODE = cfg.get("default_mode", "")
@@ -97,17 +107,26 @@ def extract_sentences(text: str, start: int):
     return out, start
 
 
-def barge_in_due(speaking: bool, active: bool, barged: bool,
+def barge_in_due(speaking: bool, busy: bool, active: bool, barged: bool,
                  speech_ms: float, played_ms: float) -> bool:
     """Whether voiced speech is a child cutting in rather than echo.
 
     Assistant audio reaches the mic even with echo cancellation on, so
     speech heard while playing must both outlast the playback lead-in and
     run long enough to be a real interruption.
+
+    A turn that is still being produced makes no sound, so there is no
+    echo to explain away -- but there is also no playback clock, and
+    throwing the answer away on a short noise costs the whole turn. Such
+    an interruption therefore has to be a sustained run of speech.
     """
-    return (speaking and active and not barged
-            and played_ms >= BARGE_IN_GRACE_MS
-            and speech_ms >= BARGE_IN_MS)
+    if not (active and not barged):
+        return False
+    if speaking:
+        return played_ms >= BARGE_IN_GRACE_MS and speech_ms >= BARGE_IN_MS
+    if busy:
+        return speech_ms >= PENDING_BARGE_IN_MS
+    return False
 
 
 class Session:
@@ -129,10 +148,15 @@ class Session:
         self.vad_task: asyncio.Task | None = None
         self.turn_task: asyncio.Task | None = None
         self.cancel: asyncio.Event | None = None
-        self.speaking = False
+        self.speaking = False      # audio is on its way to the client
         self.speaking_since = 0.0
+        # Spans the whole turn, from VAD close to the last audio frame.
+        # Unlike `speaking` it covers the silent ASR -> LLM -> TTS stretch,
+        # which is the part where an impatient re-ask used to cancel the
+        # answer before it had any chance to be heard.
+        self.busy = False
         # Both describe the turn the VAD is collecting right now.
-        self.turn_echo = False     # opened while the assistant was playing
+        self.turn_echo = False     # opened while the assistant was occupied
         self.turn_barged = False   # confirmed as a real interruption
 
     def system_prompt(self) -> str:
@@ -188,6 +212,21 @@ async def tts_worker(ws: WebSocket, sess: Session, queue: asyncio.Queue,
             await send_json(ws, {"type": "audio_end"})
 
 
+async def queue_sentence(ws: WebSocket, queue: asyncio.Queue, marks: dict,
+                         t0: float, sentence: str):
+    """Hand one chunk to the TTS worker and mark when text became ready.
+
+    The gap between this and the first audio frame is pure TTS time, and
+    it is the difference between a conversation and a page that looks
+    stuck, so the client gets told as soon as synthesis is in flight.
+    """
+    if "llm_first_sentence" not in marks:
+        marks["llm_first_sentence"] = now_ms(t0)
+        await send_json(ws, {"type": "state", "value": "preparing"})
+    await send_json(ws, {"type": "sentence", "text": sentence})
+    queue.put_nowait(sentence)
+
+
 async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
                            cancel: asyncio.Event):
     t0 = time.perf_counter()
@@ -218,8 +257,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
             # Emit every complete sentence (>= SENTENCE_MIN_CHARS) for TTS.
             emitted, sent_start = extract_sentences(cleaned, sent_start)
             for sentence in emitted:
-                await send_json(ws, {"type": "sentence", "text": sentence})
-                queue.put_nowait(sentence)
+                await queue_sentence(ws, queue, marks, t0, sentence)
         if cancel.is_set():
             await send_json(ws, {"type": "interrupted"})
             return
@@ -227,8 +265,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         reply = THINK_RE.sub("", "".join(reply_parts)).strip()
         rest = reply[sent_start:].strip() if sent_start < len(reply) else ""
         if rest:
-            await send_json(ws, {"type": "sentence", "text": rest})
-            queue.put_nowait(rest)
+            await queue_sentence(ws, queue, marks, t0, rest)
         queue.put_nowait(None)  # sentinel: drain then stop
         await worker
 
@@ -253,6 +290,7 @@ async def cancel_turn(sess: Session):
     as soon as it starts.
     """
     sess.speaking = False
+    sess.busy = False
     if sess.cancel:
         sess.cancel.set()
     task = sess.turn_task
@@ -267,9 +305,14 @@ async def cancel_turn(sess: Session):
 async def start_turn(ws: WebSocket, sess: Session, pcm24: np.ndarray):
     await cancel_turn(sess)
     sess.cancel = asyncio.Event()
-    sess.turn_task = asyncio.create_task(
+    sess.busy = True
+    task = asyncio.create_task(
         handle_utterance(ws, sess, pcm24, sess.cancel)
     )
+    sess.turn_task = task
+    # Cleared on completion and on cancellation alike, so a turn that was
+    # killed never leaves the session stuck thinking it is busy.
+    task.add_done_callback(lambda _: setattr(sess, "busy", False))
 
 
 async def cut_off(ws: WebSocket, sess: Session):
@@ -287,15 +330,22 @@ async def vad_task(ws: WebSocket, sess: Session):
         thr = BARGE_IN_THRESHOLD if sess.speaking else None
         for ev in sess.svad.feed(pcm, thr):
             if ev.kind == "speech_start":
-                sess.turn_echo = sess.speaking
+                # An utterance that opens while the assistant is playing or
+                # still working on an answer is not a turn of its own until
+                # it proves itself by outlasting the barge-in rules.
+                sess.turn_echo = sess.speaking or sess.busy
                 sess.turn_barged = False
-                await send_json(ws, {"type": "state", "value": "hearing"})
+                # Only when nothing is in flight: overwriting the
+                # thinking/preparing state with "hearing" would tell the
+                # child the answer was given up on while it is still coming.
+                if not sess.turn_echo:
+                    await send_json(ws, {"type": "state", "value": "hearing"})
             elif sess.turn_echo and not sess.turn_barged:
-                continue  # echo of the assistant, not a turn of its own
+                continue  # echo or impatience, not a turn of its own
             else:
                 await start_turn(ws, sess, ev.pcm24)
-        if barge_in_due(sess.speaking, sess.svad.active, sess.turn_barged,
-                        sess.svad.speech_ms,
+        if barge_in_due(sess.speaking, sess.busy, sess.svad.active,
+                        sess.turn_barged, sess.svad.speech_ms,
                         (time.perf_counter() - sess.speaking_since) * 1000):
             await cut_off(ws, sess)
 

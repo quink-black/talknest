@@ -20,6 +20,8 @@
   .bubble { max-width: 85%; padding: .55rem .8rem; border-radius: 12px; white-space: pre-wrap; }
   .bubble.user { align-self: flex-end; background: #d7e8f7; }
   .bubble.reply { align-self: flex-start; background: #efece4; }
+  .bubble.reply.typing::after { content: "…"; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
   table { border-collapse: collapse; margin-top: 1rem; font-size: .85rem; }
   th, td { border: 1px solid #ddd; padding: .3rem .6rem; text-align: right; }
   .hint { color: #888; font-size: .85rem; }
@@ -69,7 +71,7 @@
 安全上下文，局域网 IP 走纯 HTTP 时需要通过浏览器 flag 或 TLS 放行。</p>
 
 <table>
-  <thead><tr><th>ASR done</th><th>First audio</th></tr></thead>
+  <thead><tr><th>ASR done</th><th>Text ready</th><th>First audio</th></tr></thead>
   <tbody id="marksBody"></tbody>
 </table>
 

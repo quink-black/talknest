@@ -70,10 +70,19 @@ class TestExtractSentences:
     def test_short_final_sentence_held_back(self):
         # A short tail chunk is not emitted; the caller flushes it at
         # end of stream.
-        text = "First sentence goes here plainly. Short tail."
+        text = "First sentence goes here plainly. OK."
         out, start = extract_sentences(text, 0)
         assert out == ["First sentence goes here plainly."]
-        assert text[start:].strip() == "Short tail."
+        assert text[start:].strip() == "OK."
+
+    def test_first_sentence_goes_out_on_its_own(self):
+        # The point of a low threshold: synthesis starts on the first
+        # sentence. Holding it back for the next one is what delayed the
+        # first audio by most of the reply on short kid-mode answers.
+        text = "兔子的英文是 rabbit。"
+        out, start = extract_sentences(text, 0)
+        assert out == ["兔子的英文是 rabbit。"]
+        assert start == len(text)
 
     def test_offset_continues_across_calls(self):
         # One call emits every currently-complete chunk, then continues
@@ -88,7 +97,7 @@ class TestExtractSentences:
         assert start2 == start1
 
     def test_streaming_growth(self):
-        text = "One two three four five six seven. Eight nine ten."
+        text = "One two three four five six seven. Fine."
         out1, start1 = extract_sentences(text, 0)
         assert out1 == ["One two three four five six seven."]
         out2, start2 = extract_sentences(text, start1)
@@ -96,7 +105,7 @@ class TestExtractSentences:
         # More text arrives; the short tail merges into the new chunk.
         text += " Eleven twelve thirteen fourteen fifteen."
         out3, start3 = extract_sentences(text, start2)
-        assert out3 == ["Eight nine ten. Eleven twelve thirteen fourteen fifteen."]
+        assert out3 == ["Fine. Eleven twelve thirteen fourteen fifteen."]
         assert start3 == len(text)
 
     def test_min_chars_respected(self):
@@ -262,18 +271,31 @@ class TestStreamVAD:
 
 
 class TestBargeInDue:
-    def test_needs_speaking_and_active(self):
-        assert not barge_in_due(False, True, False, 500, 500)
-        assert not barge_in_due(True, False, False, 500, 500)
+    # barge_in_due(speaking, busy, active, barged, speech_ms, played_ms)
+    def test_needs_something_in_flight(self):
+        # Nothing playing and nothing pending: there is no turn to cut off.
+        assert not barge_in_due(False, False, True, False, 2000, 2000)
 
-    def test_needs_long_speech(self):
-        assert not barge_in_due(True, True, False, 100, 500)
+    def test_needs_active(self):
+        assert not barge_in_due(True, True, False, False, 2000, 2000)
+
+    def test_needs_long_speech_while_playing(self):
+        assert not barge_in_due(True, True, True, False, 100, 2000)
 
     def test_needs_playback_past_the_lead_in(self):
-        assert not barge_in_due(True, True, False, 500, 100)
+        assert not barge_in_due(True, True, True, False, 2000, 100)
 
     def test_fires_once_conditions_hold(self):
-        assert barge_in_due(True, True, False, 500, 500)
+        assert barge_in_due(True, True, True, False, 2000, 2000)
 
     def test_does_not_fire_twice(self):
-        assert not barge_in_due(True, True, True, 500, 500)
+        assert not barge_in_due(True, True, True, True, 2000, 2000)
+
+    def test_pending_turn_ignores_impatience(self):
+        # A turn that has produced no audio yet is silent, but a child
+        # waiting for an answer says things like "喂?" -- losing the
+        # reply to that is worse than making them wait it out.
+        assert not barge_in_due(False, True, True, False, 300, 0)
+
+    def test_pending_turn_yields_to_a_real_question(self):
+        assert barge_in_due(False, True, True, False, 3000, 0)
