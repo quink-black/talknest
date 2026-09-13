@@ -40,6 +40,23 @@ for s in "${SERVICES[@]}"; do
     esac
 done
 
+# talknest-llm has Requires= on asr and tts, so stopping either stops it
+# too. Naming only asr/tts would therefore leave the LLM down -- stranded,
+# and a later start can hit the unit's start limit. Bring it along.
+if [ "$ACTION" != status ] && [ "${#SERVICES[@]}" -lt 4 ]; then
+    case " ${SERVICES[*]} " in
+        *" llm "*) ;;
+        *)
+            for s in "${SERVICES[@]}"; do
+                if [ "$s" = asr ] || [ "$s" = tts ]; then
+                    SERVICES+=(llm); units+=("talknest-llm.service")
+                    break
+                fi
+            done
+            ;;
+    esac
+fi
+
 case "$ACTION" in
     start)
         # A clean unit stop first: without it, a stray fuser kill would
