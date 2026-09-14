@@ -1,0 +1,258 @@
+# Chinese gloss for every word the curricula teach.
+#
+# The dictionary can confirm a word exists and how it is pronounced, but it
+# picks the wrong sense far too often to be shown to a parent: "apple" is a
+# phone company before it is a fruit, "red" is 彤 before it is 红色, and
+# "bye" is a sports bye before it is 再见. So the glosses are written here,
+# in the repository where they can be read and corrected, and
+# scripts/import_curriculum.py only adds pinyin from CC-CEDICT.
+#
+# Keys are lemmas, exactly as they appear in units[].words (lowercase).
+
+# greetings / questions / manners
+hello: 你好
+hi: 嗨
+bye: 再见
+name: 名字
+i: 我
+my: 我的
+what: 什么
+where: 哪里
+who: 谁
+how: 怎么
+"yes": 是
+"no": 不          # quoted: bare no is a YAML boolean
+please: 请
+thanks: 谢谢
+sorry: 对不起
+welcome: 不客气
+excuse: 借过
+goodbye: 再见
+
+# colours
+red: 红色
+yellow: 黄色
+blue: 蓝色
+green: 绿色
+black: 黑色
+white: 白色
+
+# numbers
+one: 一
+two: 二
+three: 三
+four: 四
+five: 五
+six: 六
+seven: 七
+eight: 八
+nine: 九
+ten: 十
+zero: 零
+
+# animals
+cat: 猫
+dog: 狗
+rabbit: 兔子
+bird: 鸟
+fish: 鱼
+panda: 熊猫
+tiger: 老虎
+elephant: 大象
+monkey: 猴子
+tail: 尾巴
+clever: 聪明
+
+# food and drink
+apple: 苹果
+banana: 香蕉
+milk: 牛奶
+egg: 鸡蛋
+bread: 面包
+rice: 米饭
+water: 水
+juice: 果汁
+tea: 茶
+soup: 汤
+cup: 杯子
+bottle: 瓶子
+orange: 橙子
+pear: 梨
+grape: 葡萄
+peach: 桃子
+lemon: 柠檬
+cherry: 樱桃
+noodles: 面条
+chicken: 鸡肉
+breakfast: 早餐
+dinner: 晚餐
+menu: 菜单
+order: 点餐
+
+# family
+mother: 妈妈
+father: 爸爸
+sister: 姐妹
+brother: 兄弟
+grandma: 奶奶
+grandpa: 爷爷
+
+# body
+head: 头
+hand: 手
+eye: 眼睛
+nose: 鼻子
+mouth: 嘴
+ear: 耳朵
+
+# toys, school, play
+ball: 球
+doll: 娃娃
+car: 小汽车
+kite: 风筝
+bear: 熊
+robot: 机器人
+school: 学校
+book: 书
+pen: 钢笔
+bag: 书包
+desk: 课桌
+teacher: 老师
+play: 玩
+game: 游戏
+song: 歌
+dance: 跳舞
+draw: 画画
+read: 读
+
+# clothes
+hat: 帽子
+coat: 外套
+shoe: 鞋
+sock: 袜子
+shirt: 衬衫
+dress: 连衣裙
+size: 尺码
+
+# weather and nature
+sun: 太阳
+rain: 雨
+wind: 风
+snow: 雪
+hot: 热
+cold: 冷
+warm: 暖和
+cool: 凉快
+tree: 树
+flower: 花
+grass: 草
+river: 河
+sky: 天空
+star: 星星
+
+# home
+bed: 床
+door: 门
+table: 桌子
+chair: 椅子
+window: 窗户
+room: 房间
+
+# actions
+run: 跑
+jump: 跳
+walk: 走
+sit: 坐
+eat: 吃
+drink: 喝
+swim: 游泳
+help: 帮忙
+visit: 拜访
+buy: 买
+think: 认为
+hope: 希望
+want: 想要
+join: 参加
+
+# feelings and opinions
+happy: 开心
+sad: 难过
+hungry: 饿
+tired: 累
+angry: 生气
+scared: 害怕
+interesting: 有趣
+boring: 无聊
+easy: 容易
+difficult: 难
+
+# size and place
+big: 大
+small: 小
+long: 长
+short: 短
+tall: 高
+new: 新
+in: 里面
+"on": 上面      # quoted: bare on is a YAML boolean
+under: 下面
+here: 这里
+there: 那里
+up: 向上
+
+# time
+today: 今天
+tomorrow: 明天
+morning: 早上
+night: 晚上
+now: 现在
+again: 再一次
+early: 早
+usually: 通常
+bedtime: 睡觉时间
+weekend: 周末
+saturday: 星期六
+sunday: 星期日
+holiday: 假期
+spring: 春天
+summer: 夏天
+autumn: 秋天
+winter: 冬天
+
+# transport and travel
+bus: 公共汽车
+bike: 自行车
+train: 火车
+plane: 飞机
+boat: 船
+road: 路
+trip: 旅行
+ticket: 票
+hotel: 旅馆
+photo: 照片
+
+# school subjects and hobbies
+math: 数学
+english: 英语
+chinese: 语文
+science: 科学
+art: 美术
+music: 音乐
+hobby: 爱好
+chess: 象棋
+stamp: 邮票
+homework: 作业
+
+# sport
+football: 足球
+basketball: 篮球
+team: 队
+match: 比赛
+
+# planning and shopping
+plan: 计划
+because: 因为
+shop: 商店
+price: 价格
+cheap: 便宜
+expensive: 贵

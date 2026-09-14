@@ -1,0 +1,27 @@
+# Sources for the imported word list (L1).
+#
+# scripts/import_curriculum.py downloads these once into data/curriculum
+# and writes lexicon.jsonl from them. data/ is not in the repository, so
+# nothing downloaded here is redistributed with the code.
+sources:
+  - name: cc-cedict
+    publisher: MDBG
+    url: https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip
+    license: CC BY-SA 4.0
+    license_url: https://creativecommons.org/licenses/by-sa/4.0/
+    use: Chinese glosses and pinyin
+    member: cedict_ts.u8
+    # Empty until --pin records the hash of a copy already checked by eye.
+    sha256: ""
+
+# Deliberately not used:
+#
+# NGSL (newgeneralservicelist.com) offers its list without stating a
+# licence anywhere on the site. Personal study would probably be fine, but
+# "probably" is not a licence, and nothing here needs it: the curricula
+# define their own word order, and CC-CEDICT already supplies the glosses.
+#
+# The 义务教育英语课程标准（2022年版） vocabulary tables would be the
+# right source for grade-level tagging; no clean machine-readable copy was
+# found, so the field stays empty rather than being scraped from a document
+# farm.

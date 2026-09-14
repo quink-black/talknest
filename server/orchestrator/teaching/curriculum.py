@@ -8,6 +8,7 @@ are satisfied.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,21 @@ def load(mode: str, lexicon: set[str] | None = None,
     return _topological(units, path)
 
 
+def load_lexicon(path: Path) -> set[str] | None:
+    """Lemmas of the imported word list, or None when there is none.
+
+    None means the importer has not run, which skips validation rather than
+    rejecting every word in every curriculum.
+    """
+    if not path.exists():
+        return None
+    words = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            words.add(json.loads(line)["lemma"])
+    return words or None
+
+
 def _unit(raw: dict, path: Path) -> Unit:
     if not raw.get("id"):
         raise CurriculumError(f"{path}: unit without id")
@@ -69,13 +85,28 @@ def _unit(raw: dict, path: Path) -> Unit:
         id=str(raw["id"]),
         title=str(raw.get("title", raw["id"])),
         goal=str(raw.get("goal", "")),
-        words=tuple(str(w).strip().lower() for w in raw["words"]),
+        words=_words(raw, "words", path),
         patterns=tuple(str(p) for p in raw.get("patterns") or ()),
         after=tuple(str(a) for a in raw.get("after") or ()),
         sessions=int(raw.get("sessions", 1)),
-        untracked=tuple(str(w).strip().lower()
-                        for w in raw.get("untracked") or ()),
+        untracked=_words(raw, "untracked", path),
     )
+
+
+def _words(raw: dict, key: str, path: Path) -> tuple[str, ...]:
+    """Word list, rejecting anything YAML read as a different type.
+
+    A bare on/yes/no is a boolean to YAML, and str()-ing it would quietly
+    put "true" into the vocabulary instead of the word.
+    """
+    out = []
+    for value in raw.get(key) or ():
+        if not isinstance(value, str):
+            raise CurriculumError(
+                f"{path}: {key} has {value!r}, which YAML read as a "
+                f"{type(value).__name__}; quote it")
+        out.append(value.strip().lower())
+    return tuple(out)
 
 
 def _validate(units: list[Unit], path: Path, lexicon: set[str] | None) -> None:

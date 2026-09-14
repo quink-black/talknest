@@ -66,6 +66,18 @@ model/
   silero-vad/silero_vad.onnx                    VAD
 ```
 
+## 教学词库
+
+大纲用到的中文释义和拼音不入库，需要导一次（下载约 4 MB，只下一次）：
+
+```bash
+./venv/bin/python scripts/import_curriculum.py
+```
+
+释义写在 `server/curriculum/glosses.yaml`（入库，可以直接改），脚本从
+CC-CEDICT 补拼音，生成 `data/curriculum/lexicon.jsonl`。不导也能跑，只是
+大纲里的词不做校验 —— 拼错不会被发现。
+
 ## 本机配置（local.env）
 
 venv 路径、构建目录、权重根目录、显存分配这些只跟机器有关的东西不进

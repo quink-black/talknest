@@ -10,7 +10,7 @@ units:
   - id: subjects
     title: 课程
     goal: 能说喜欢什么课
-    words: [maths, english, chinese, science, art, music]
+    words: [math, english, chinese, science, art, music]
     patterns: ["I like science.", "My favourite subject is art."]
     after: []
     sessions: 2

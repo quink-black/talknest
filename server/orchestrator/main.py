@@ -216,7 +216,11 @@ class Session:
         if self.store is None:
             return
         name = cfg["modes"][self.mode].get("curriculum")
-        self.units = curriculum.load(name) if name else []
+        # Without a lexicon the words are not checked, so a curriculum still
+        # loads on a machine that has never run the importer.
+        lexicon = curriculum.load_lexicon(
+            data_root() / "curriculum" / "lexicon.jsonl")
+        self.units = curriculum.load(name, lexicon) if name else []
         self.vocab = {w for u in self.units for w in u.words}
         self.tracked = self.vocab - {w for u in self.units for w in u.untracked}
         self.store.sync_units(self.units)
@@ -582,7 +586,9 @@ async def get_units(learner: str, mode: str = ""):
     """
     mode = mode if mode in cfg["modes"] else DEFAULT_MODE
     name = cfg["modes"][mode].get("curriculum")
-    units = curriculum.load(name) if name else []
+    lexicon = curriculum.load_lexicon(
+        data_root() / "curriculum" / "lexicon.jsonl")
+    units = curriculum.load(name, lexicon) if name else []
     store = Store(slug(learner), data_root())
     try:
         store.sync_units(units)

@@ -72,11 +72,36 @@ class TestCurriculum:
         with pytest.raises(CurriculumError, match="lexicon"):
             curriculum.load("kid", lexicon={"hi"}, directory=tmp_path)
 
+    def test_yaml_booleans_are_rejected(self, tmp_path):
+        # A bare on/yes/no is a boolean to YAML and would otherwise reach the
+        # vocabulary as "true".
+        _write(tmp_path, "kid.yaml",
+               "mode: kid\nunits:\n  - id: a\n    words: [in, on, up]\n")
+        with pytest.raises(CurriculumError, match="quote it"):
+            curriculum.load("kid", directory=tmp_path)
+
     def test_untracked_words_parse(self, tmp_path):
         _write(tmp_path, "kid.yaml",
                "mode: kid\nunits:\n  - id: a\n    words: [i, cat]\n"
                "    untracked: [i]\n")
         assert curriculum.load("kid", directory=tmp_path)[0].untracked == ("i",)
+
+    def test_load_lexicon_is_none_without_a_file(self, tmp_path):
+        assert curriculum.load_lexicon(tmp_path / "lexicon.jsonl") is None
+
+    def test_load_lexicon_reads_lemmas(self, tmp_path):
+        path = tmp_path / "lexicon.jsonl"
+        path.write_text('{"lemma": "cat"}\n\n{"lemma": "dog"}\n',
+                        encoding="utf-8")
+        assert curriculum.load_lexicon(path) == {"cat", "dog"}
+
+    def test_curricula_validate_against_the_imported_lexicon(self):
+        lexicon = curriculum.load_lexicon(
+            main.data_root() / "curriculum" / "lexicon.jsonl")
+        if lexicon is None:
+            pytest.skip("no word list imported: run scripts/import_curriculum.py")
+        for mode in ("kid", "kid_upper"):
+            assert curriculum.load(mode, lexicon), mode
 
     def test_lexicon_match_passes(self, tmp_path):
         _write(tmp_path, "kid.yaml",

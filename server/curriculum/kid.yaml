@@ -159,8 +159,9 @@ units:
   - id: places
     title: 在哪儿
     goal: 能说东西在哪里
-    words: [in, on, under, here, there, up]
-    untracked: [in, on]
+    # Quoted: bare on/yes/no are booleans in YAML, not words.
+    words: [in, "on", under, here, there, up]
+    untracked: [in, "on"]
     patterns: ["It is on the table.", "Look up!"]
     after: [home]
     sessions: 2
@@ -200,8 +201,8 @@ units:
   - id: questions
     title: 提问
     goal: 会问和会答简单的问题
-    words: [what, where, who, how, yes, no]
-    untracked: [what, where, who, how, yes, no]
+    words: [what, where, who, how, "yes", "no"]
+    untracked: [what, where, who, how, "yes", "no"]
     patterns: ["What is it?", "Yes, it is."]
     after: [greetings]
     sessions: 3
