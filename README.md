@@ -224,7 +224,13 @@ local.env              本机配置（不入库，见 local.env.example）
 ./venv/bin/python tests/ws_smoke.py --barge   # 断言插话能打断
 ./venv/bin/python tests/ws_smoke.py --reask   # 断言追问时已有回答不丢
 ./venv/bin/python scripts/bench_llm.py     # LLM 延迟基准
+./venv/bin/python scripts/eval_teaching.py # 教学计划：跟不跟计划、计划块带来多少延迟
 ```
+
+`eval_teaching.py` 需要 LLM 服务在跑，用脚本化的“假孩子”跑若干轮，给出
+四组数字：是否教了计划里的词、有没有把已会的词当新词教、回复里英文占比的
+中位数、以及加计划块前后首 token 延迟的差值。学习者状态写进临时目录，
+不会碰到真实档案。加 `--write docs/bench/teaching-eval.md` 存成报告。
 
 ## 提交前密钥扫描
 
