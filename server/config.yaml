@@ -88,7 +88,11 @@ teaching:
     known_items: 20
     portrait_lines: 3
     digest_lines: 2
+    summary_chars: 140
     line_chars: 30
+  # Oldest turns folded into a rolling summary once the window overflows by
+  # this many messages, instead of being dropped on the floor.
+  compact_messages: 8
 
 # Default conversation mode for a new session; the client can switch at
 # any time (per-session, effective on the next turn). Modes below are

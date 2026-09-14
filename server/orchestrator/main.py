@@ -17,6 +17,7 @@ import logging
 import pathlib
 import re
 import time
+from dataclasses import replace
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -82,6 +83,7 @@ BLOCK_CAPS = state_block.Caps(**TEACHING_CFG.get("block", {}))
 # off until a host has the room for a second call; on_disconnect runs after
 # the socket is gone, so it never delays a reply.
 DIGEST_MODE = str(TEACHING_CFG.get("digest", "off"))
+COMPACT_MESSAGES = int(TEACHING_CFG.get("compact_messages", 8))
 DEFAULT_LEARNER = str(TEACHING_CFG.get("default_learner", "default"))
 HISTORY_MESSAGES = int(
     cfg["llm"]["profiles"][cfg["llm"]["active"]].get("history_messages", 20))
@@ -205,6 +207,8 @@ class Session:
         self.tracked: set[str] = set()
         self.plan = state_block.Plan()
         self.portrait = profile.Profile()
+        self.summary = ""
+        self.compacting = False
         self.session_id: int | None = None
         if TEACHING:
             self.open_learner(DEFAULT_LEARNER)
@@ -348,6 +352,52 @@ def record_turn(sess: Session, learner_text: str, spoken: list[str],
                         sorted(set(taught) | set(heard)), interrupted)
 
 
+# Folding the oldest turns into a summary rather than dropping them: the
+# oldest turns are exactly where "we already did colours" is written down,
+# and losing that is how the tutor starts circling back to them.
+COMPACT_PROMPT = """下面是英语陪练对话里最早的一段，以及之前对更早期内容的摘要。
+
+请把它们合并成一段不超过 140 字的中文摘要，只保留后面用得上的：聊过的
+话题、提到的人和事、教过的英文词、孩子犯过的错。不要写评价，不要写
+“摘要”两个字。
+
+已有摘要：
+{previous}
+
+最早的一段：
+{transcript}
+"""
+
+
+async def compact_history(sess: Session):
+    """Fold the oldest turns into the rolling summary.
+
+    Runs off the critical path: the summary is only used from the next turn
+    on, so the child never waits for it.
+    """
+    overflow = len(sess.history) - HISTORY_MESSAGES
+    if overflow < COMPACT_MESSAGES:
+        return
+    oldest = sess.history[: overflow]
+    transcript = "\n".join(
+        f"{'孩子' if m['role'] == 'user' else '老师'}：{m['content']}"
+        for m in oldest)
+    prompt = COMPACT_PROMPT.format(previous=sess.summary or "（无）",
+                                   transcript=transcript)
+    try:
+        reply = "".join([d async for d in llm.stream_chat(
+            [{"role": "user", "content": prompt}], max_tokens=160)]).strip()
+    except Exception as e:
+        log.warning("compaction failed: %s", e)
+        return
+    # No await between the check and the cut, so nothing else can have moved
+    # the history in the meantime.
+    if not reply or sess.history[: overflow] != oldest:
+        return
+    sess.summary = THINK_RE.sub("", reply)
+    del sess.history[: overflow]
+
+
 async def write_portrait(sess: Session):
     """Update a learner's portrait from the session that just ended.
 
@@ -373,6 +423,8 @@ def build_messages(sess: Session, text: str) -> list[dict]:
     plan = state_block.Plan()
     if sess.store is not None and sess.units:
         plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS, sess.portrait)
+    if sess.summary:
+        plan = replace(plan, summary=sess.summary)
     sess.plan = plan   # the turn's bookkeeping credits what was asked for
     block = state_block.render(plan, BLOCK_CAPS)
     messages = [{"role": "system", "content": sess.system_prompt()}]
@@ -441,6 +493,12 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         worker.cancel()
         if user_text:
             record_turn(sess, user_text, spoken, cancel.is_set())
+            if (TEACHING and not sess.compacting
+                    and len(sess.history) - HISTORY_MESSAGES >= COMPACT_MESSAGES):
+                sess.compacting = True
+                task = asyncio.create_task(compact_history(sess))
+                task.add_done_callback(
+                    lambda _: setattr(sess, "compacting", False))
         if not cancel.is_set():
             await send_json(ws, {"type": "state", "value": "listening"})
 

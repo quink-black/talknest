@@ -20,6 +20,7 @@ class Caps:
     known_items: int = 20
     portrait_lines: int = 3
     digest_lines: int = 2
+    summary_chars: int = 140
     line_chars: int = 30
 
 
@@ -31,6 +32,9 @@ class Plan:
     known: list[str] = field(default_factory=list)
     portrait: list[str] = field(default_factory=list)
     digest: list[str] = field(default_factory=list)
+    # What the older part of this conversation was about, once it has been
+    # folded out of the window.
+    summary: str = ""
 
 
 def render(plan: Plan, caps: Caps = Caps()) -> str:
@@ -54,6 +58,8 @@ def render(plan: Plan, caps: Caps = Caps()) -> str:
     if plan.digest:
         lines = [_clip(x, caps.line_chars) for x in plan.digest[: caps.digest_lines]]
         parts.append("上次: " + "；".join(lines))
+    if plan.summary:
+        parts.append("前文: " + _clip(plan.summary, caps.summary_chars))
     if not parts:
         return ""
     return "【" + " ｜ ".join(parts) + "】"

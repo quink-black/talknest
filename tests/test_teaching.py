@@ -252,6 +252,15 @@ class TestStateBlock:
         plan = state_block.Plan(portrait=["喜欢恐龙", "怕黑"], digest=["聊了家里的猫"])
         assert state_block.render(plan) == "【画像: 喜欢恐龙；怕黑 ｜ 上次: 聊了家里的猫】"
 
+    def test_summary_of_the_older_conversation(self):
+        plan = state_block.Plan(summary="聊过颜色和猫")
+        assert state_block.render(plan) == "【前文: 聊过颜色和猫】"
+
+    def test_summary_is_clipped(self):
+        plan = state_block.Plan(summary="x" * 300)
+        out = state_block.render(plan, state_block.Caps(summary_chars=20))
+        assert out == "【前文: " + "x" * 19 + "…】"
+
     def test_long_lines_are_clipped(self):
         plan = state_block.Plan(portrait=["x" * 80])
         assert state_block.render(plan, state_block.Caps(line_chars=10)) == \
@@ -438,6 +447,52 @@ class TestEndpoints:
         TestClient(main.app).get("/learners/..escaped/units?mode=kid")
         assert not (tmp_path.parent / "escaped").exists()
         assert (tmp_path / "learners" / "escaped").is_dir()
+
+
+class TestCompaction:
+    def _session(self, tmp_path, monkeypatch, turns):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(main, "HISTORY_MESSAGES", 4)
+        monkeypatch.setattr(main, "COMPACT_MESSAGES", 2)
+        session = main.Session()
+        session.open_learner("tester")
+        session.history.extend(
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"t{i}"}
+            for i in range(turns))
+        return session
+
+    def test_oldest_turns_are_folded_in(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main, "llm", FakeLLM("聊过颜色和猫"))
+        session = self._session(tmp_path, monkeypatch, 6)
+        asyncio.run(main.compact_history(session))
+        assert session.summary == "聊过颜色和猫"
+        assert len(session.history) == 4
+        session.close()
+
+    def test_nothing_happens_below_the_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main, "llm", FakeLLM("聊过颜色和猫"))
+        session = self._session(tmp_path, monkeypatch, 5)
+        asyncio.run(main.compact_history(session))
+        assert session.summary == ""
+        assert len(session.history) == 5
+        session.close()
+
+    def test_a_failed_summary_leaves_the_history_alone(self, tmp_path,
+                                                       monkeypatch):
+        class Broken:
+            async def stream_chat(self, messages, cancel=None, max_tokens=None):
+                raise RuntimeError("model is down")
+                yield ""
+
+        monkeypatch.setattr(main, "llm", Broken())
+        session = self._session(tmp_path, monkeypatch, 6)
+        asyncio.run(main.compact_history(session))
+        assert len(session.history) == 6
+        session.close()
+
+    def test_summary_reaches_the_prompt(self, session):
+        session.summary = "聊过颜色和猫"
+        assert "前文: 聊过颜色和猫" in main.build_messages(session, "你好")[-1]["content"]
 
 
 class TestProgress:
