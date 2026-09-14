@@ -37,6 +37,10 @@
             background: #fff; padding: .6rem .8rem; }
   #parent summary { cursor: pointer; font-size: .95rem; color: #555; }
   .prow { display: flex; align-items: center; gap: .6rem; margin-top: .6rem; }
+  #words table { width: 100%; margin-top: .6rem; }
+  #words th, #words td { text-align: left; }
+  #words td:last-child { text-align: right; white-space: nowrap; }
+  #words button { font-size: .8rem; padding: .25rem .5rem; margin-left: .25rem; }
 </style>
 </head>
 <body>
@@ -66,8 +70,10 @@
     <label class="dev">学习单元 <select id="unit"></select></label>
     <span class="hint" id="unitHint"></span>
   </div>
+  <div id="words"></div>
   <p class="hint">选了单元就只教这个单元的新词（想重复练或跳过都可以），不选
-  则按大纲顺序自动往下走。切换“我是谁”或模式会清空当前对话。</p>
+  则按大纲顺序自动往下走。“已会”“重学”是你下的判断，之后自动记录不再改动
+  这个词；“自动”把它交回系统。切换“我是谁”或模式会清空当前对话。</p>
 </details>
 
 <div class="devices">

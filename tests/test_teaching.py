@@ -106,9 +106,9 @@ class TestCurriculum:
 
     def test_load_lexicon_reads_lemmas(self, tmp_path):
         path = tmp_path / "lexicon.jsonl"
-        path.write_text('{"lemma": "cat"}\n\n{"lemma": "dog"}\n',
+        path.write_text('{"lemma": "cat", "zh": "猫"}\n\n{"lemma": "dog"}\n',
                         encoding="utf-8")
-        assert curriculum.load_lexicon(path) == {"cat", "dog"}
+        assert curriculum.load_lexicon(path) == {"cat": "猫", "dog": None}
 
     def test_curricula_validate_against_the_imported_lexicon(self):
         lexicon = curriculum.load_lexicon(
@@ -438,6 +438,53 @@ class TestEndpoints:
         TestClient(main.app).get("/learners/..escaped/units?mode=kid")
         assert not (tmp_path.parent / "escaped").exists()
         assert (tmp_path / "learners" / "escaped").is_dir()
+
+
+class TestProgress:
+    def test_words_of_a_unit_start_untaught(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        data = TestClient(main.app).get(
+            "/learners/tester/progress?mode=kid&unit=greetings").json()
+        assert data["unit"] == "greetings"
+        assert [w["lemma"] for w in data["words"]][:2] == ["hello", "hi"]
+        assert all(w["state"] == "未学" for w in data["words"])
+
+    def test_progress_shows_the_chinese_gloss(self, tmp_path, monkeypatch):
+        source = main.data_root() / "curriculum" / "lexicon.jsonl"
+        if not source.exists():
+            pytest.skip("no word list imported: run scripts/import_curriculum.py")
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        (tmp_path / "curriculum").mkdir()
+        (tmp_path / "curriculum" / "lexicon.jsonl").write_text(
+            source.read_text(encoding="utf-8"), encoding="utf-8")
+        data = TestClient(main.app).get(
+            "/learners/tester/progress?mode=kid&unit=colors").json()
+        assert data["words"][0]["zh"] == "红色"
+
+    def test_a_verdict_pins_the_word(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        client = TestClient(main.app)
+        row = client.post("/learners/tester/words/hello?mode=kid",
+                          json={"known": True}).json()
+        assert row["box"] >= 4 and row["manual"] == 1
+        row = client.post("/learners/tester/words/hello?mode=kid",
+                          json={"release": True}).json()
+        assert row["manual"] == 0
+
+    def test_a_verdict_can_send_a_word_back(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        client = TestClient(main.app)
+        client.post("/learners/tester/words/hello?mode=kid", json={"known": True})
+        row = client.post("/learners/tester/words/hello?mode=kid",
+                          json={"known": False}).json()
+        assert row["box"] == 0 and row["manual"] == 1
+
+    def test_a_word_outside_the_curriculum_is_rejected(self, tmp_path,
+                                                       monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        r = TestClient(main.app).post("/learners/tester/words/ghost?mode=kid",
+                                      json={"known": True})
+        assert r.status_code == 404
 
 
 class TestTeachingConfig:

@@ -122,7 +122,7 @@ async function onMessage(ev) {
       showMarks(msg.marks);
       setStatus("listening", false);
       replyBubble = null;
-      loadUnits();   // a turn can finish a unit, so the counts moved
+      refreshParent();   // a turn can finish a unit, so the counts moved
       break;
     case "error":
     case "tts_error":
@@ -665,19 +665,19 @@ $("mode").addEventListener("change", (e) => {
   // match it: bubbles the tutor can no longer see would be a lie.
   clearTranscript();
   send({ type: "mode", value: e.target.value });
-  loadUnits();
+  refreshParent();
 });
 
 $("learner").addEventListener("change", (e) => {
   savePref(PREF_KEY.learner, e.target.value);
   clearTranscript();
   send({ type: "learner", value: e.target.value });
-  loadUnits();
+  refreshParent();
 });
 
 $("unit").addEventListener("change", (e) => {
   send({ type: "unit", value: e.target.value });
-  loadUnits();
+  refreshParent();
 });
 
 $("micSelect").addEventListener("change", (e) => {
@@ -716,6 +716,54 @@ async function loadLearners() {
     }
     sel.value = data.learners.includes(remembered) ? remembered : data.default;
   } catch (e) { /* offline or old server: keep whatever is there */ }
+}
+
+/* The words of the chosen unit and what the learner has done with each.
+   "出现" is only a record of what came up in conversation, not a claim
+   that the word is known -- deciding that is what the buttons are for. */
+async function loadWords() {
+  const learner = $("learner").value;
+  const unit = $("unit").value;
+  if (!learner || !unit) { $("words").innerHTML = ""; return; }
+  try {
+    const r = await fetch(`learners/${encodeURIComponent(learner)}/progress?mode=`
+      + `${encodeURIComponent($("mode").value)}&unit=${encodeURIComponent(unit)}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.words.length) { $("words").innerHTML = ""; return; }
+    const rows = data.words.map((w) => `
+      <tr>
+        <td>${w.zh ? esc(w.zh) : "—"}</td>
+        <td>${esc(w.lemma)}</td>
+        <td>${esc(w.state)}${w.manual ? "（家长）" : ""}</td>
+        <td>${w.practices} 次 / ${w.sessions_seen} 次会话</td>
+        <td>
+          <button data-lemma="${esc(w.lemma)}" data-act="know">已会</button>
+          <button data-lemma="${esc(w.lemma)}" data-act="again">重学</button>
+          <button data-lemma="${esc(w.lemma)}" data-act="auto">自动</button>
+        </td>
+      </tr>`).join("");
+    $("words").innerHTML = `<table><thead><tr><th>中文</th><th>词</th>`
+      + `<th>状态</th><th>出现</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    for (const b of $("words").querySelectorAll("button")) {
+      b.addEventListener("click", () => setWord(b.dataset.lemma, b.dataset.act));
+    }
+  } catch (e) { /* offline or old server: keep whatever is there */ }
+}
+
+async function setWord(lemma, act) {
+  const body = act === "auto" ? { release: true } : { known: act === "know" };
+  await fetch(`learners/${encodeURIComponent($("learner").value)}/words/`
+    + `${encodeURIComponent(lemma)}?mode=${encodeURIComponent($("mode").value)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  refreshParent();
+}
+
+function refreshParent() {
+  loadUnits().finally(loadWords);
 }
 
 async function loadUnits() {
@@ -773,7 +821,7 @@ if (mediaAvailable()) {
 preferredMicId = loadPref(PREF_KEY.mic);
 preferredSpkId = loadPref(PREF_KEY.spk);
 
-loadModes().then(loadLearners).then(loadUnits).finally(connect);
+loadModes().then(loadLearners).then(loadUnits).then(loadWords).finally(connect);
 checkSecureContext();
 syncDeviceUi();
 scheduleRecheck(WATCHDOG_MS);  // start the periodic look

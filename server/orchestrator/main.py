@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
@@ -27,7 +28,7 @@ from .asr import ASRClient
 from .config import data_root, load
 from .llm import LLMClient
 from .teaching import curriculum, digest, match, profile, scheduler, state_block
-from .teaching.store import Store
+from .teaching.store import MASTERY_BOX, Store
 from .tts import TTSError, TTSClient
 from .vad import SileroVAD, StreamVAD
 
@@ -598,6 +599,77 @@ async def get_learners():
     if DEFAULT_LEARNER not in names:
         names.insert(0, DEFAULT_LEARNER)
     return {"default": DEFAULT_LEARNER, "learners": names}
+
+
+@app.get("/learners/{learner}/progress")
+async def get_progress(learner: str, mode: str = "", unit: str = ""):
+    """Words of one unit with what the learner has done with each.
+
+    This is what the parent judges: not a score, but how often a word has
+    come up and whether it has ever been produced.
+    """
+    mode = mode if mode in cfg["modes"] else DEFAULT_MODE
+    name = cfg["modes"][mode].get("curriculum")
+    lexicon = curriculum.load_lexicon(
+        data_root() / "curriculum" / "lexicon.jsonl")
+    units = curriculum.load(name, lexicon) if name else []
+    chosen = next((u for u in units if u.id == unit), None)
+    store = Store(slug(learner), data_root())
+    try:
+        store.sync_units(units)
+        rows = []
+        for word in (chosen.words if chosen else ()):
+            row = store.get(word) or {}
+            rows.append({
+                "lemma": word,
+                "zh": (lexicon or {}).get(word),
+                "box": row.get("box", 0),
+                "practices": row.get("practices", 0),
+                "sessions_seen": row.get("sessions_seen", 0),
+                "manual": bool(row.get("manual", 0)),
+                "state": _word_state(row.get("box", 0)),
+            })
+    finally:
+        store.close()
+    return {"learner": slug(learner), "mode": mode,
+            "unit": chosen.id if chosen else "", "words": rows}
+
+
+def _word_state(box: int) -> str:
+    if box <= 0:
+        return "未学"
+    return "已会" if box >= MASTERY_BOX else "学中"
+
+
+@app.post("/learners/{learner}/words/{lemma}")
+async def set_word_state(learner: str, lemma: str, body: dict,
+                          mode: str = ""):
+    """A parent's verdict on one word.
+
+    Setting a box pins the word: automatic bookkeeping stops moving it, so
+    "knows this" survives the word not coming up again, and "teach this
+    again" is not undone by the next session touching it.
+    """
+    mode = mode if mode in cfg["modes"] else DEFAULT_MODE
+    name = cfg["modes"][mode].get("curriculum")
+    lexicon = curriculum.load_lexicon(
+        data_root() / "curriculum" / "lexicon.jsonl")
+    store = Store(slug(learner), data_root())
+    try:
+        # The word has to exist before it can be judged, and it only exists
+        # once the curriculum that owns it has been synced.
+        store.sync_units(curriculum.load(name, lexicon) if name else [])
+        if store.get(lemma) is None:
+            return JSONResponse({"error": "unknown word"}, status_code=404)
+        if body.get("release"):
+            store.release(lemma)
+        else:
+            # Pinning is the point: a verdict survives the word not coming
+            # up again, which is the whole reason the parent sets it.
+            store.set_box(lemma, MASTERY_BOX if body.get("known") else 0)
+        return store.get(lemma)
+    finally:
+        store.close()
 
 
 @app.get("/learners/{learner}/units")

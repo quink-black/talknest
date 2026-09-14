@@ -61,18 +61,19 @@ def load(mode: str, lexicon: set[str] | None = None,
     return _topological(units, path)
 
 
-def load_lexicon(path: Path) -> set[str] | None:
-    """Lemmas of the imported word list, or None when there is none.
+def load_lexicon(path: Path) -> dict[str, str] | None:
+    """lemma -> Chinese gloss from the imported word list.
 
     None means the importer has not run, which skips validation rather than
     rejecting every word in every curriculum.
     """
     if not path.exists():
         return None
-    words = set()
+    words = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            words.add(json.loads(line)["lemma"])
+            row = json.loads(line)
+            words[row["lemma"]] = row.get("zh")
     return words or None
 
 
