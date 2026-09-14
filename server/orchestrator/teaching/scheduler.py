@@ -30,8 +30,13 @@ def current_unit(store: Store, units: list):
     return units[-1] if units else None
 
 
-def plan(store: Store, units: list, caps: state_block.Caps) -> state_block.Plan:
-    """What the tutor may teach this turn."""
+def plan(store: Store, units: list, caps: state_block.Caps,
+         portrait=None) -> state_block.Plan:
+    """What the tutor may teach this turn.
+
+    portrait, when the learner has one, contributes the newest lines of what
+    is known about them and what the last session covered.
+    """
     unit = current_unit(store, units)
     if unit is None:
         return state_block.Plan()
@@ -42,7 +47,11 @@ def plan(store: Store, units: list, caps: state_block.Caps) -> state_block.Plan:
     known = [w for w in store.known_in_units(window(units, unit.id),
                                              caps.known_items + len(review))
              if w not in review][: caps.known_items]
-    return state_block.Plan(unit=unit.id, new=new, review=review, known=known)
+    return state_block.Plan(
+        unit=unit.id, new=new, review=review, known=known,
+        portrait=list(portrait.notes[-caps.portrait_lines:]) if portrait else [],
+        digest=list(portrait.recent[-caps.digest_lines:]) if portrait else [],
+    )
 
 
 def window(units: list, unit_id: str) -> list[str]:

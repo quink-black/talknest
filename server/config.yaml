@@ -76,6 +76,10 @@ vad:
 # plan block.
 teaching:
   enabled: true
+  # Portrait written when a session ends. Off until a host has room for a
+  # second call: it runs after the socket is gone, so it never delays a
+  # reply, but it does keep the model busy as the next session starts.
+  digest: off        # off | on_disconnect
   # Item caps for the plan block. The block is prepended to the learner's
   # own words every turn, so it is kept to one line and trimmed hard.
   block:

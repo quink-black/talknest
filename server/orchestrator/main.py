@@ -13,6 +13,7 @@ config.yaml — this file has no backend branches.
 import asyncio
 import contextlib
 import json
+import logging
 import pathlib
 import re
 import time
@@ -25,13 +26,14 @@ from starlette.websockets import WebSocketState
 from .asr import ASRClient
 from .config import data_root, load
 from .llm import LLMClient
-from .teaching import curriculum, match, scheduler, state_block
+from .teaching import curriculum, digest, match, profile, scheduler, state_block
 from .teaching.store import Store
 from .tts import TTSError, TTSClient
 from .vad import SileroVAD, StreamVAD
 
 cfg = load()
 app = FastAPI(title="talknest-orchestrator")
+log = logging.getLogger(__name__)
 
 llm = LLMClient(
     cfg["llm"]["profiles"][cfg["llm"]["active"]]["base_url"],
@@ -76,6 +78,9 @@ if DEFAULT_MODE not in cfg["modes"]:
 TEACHING_CFG = cfg.get("teaching", {})
 TEACHING = bool(TEACHING_CFG.get("enabled"))
 BLOCK_CAPS = state_block.Caps(**TEACHING_CFG.get("block", {}))
+# off until a host has the room for a second call; on_disconnect runs after
+# the socket is gone, so it never delays a reply.
+DIGEST_MODE = str(TEACHING_CFG.get("digest", "off"))
 DEFAULT_LEARNER = str(TEACHING_CFG.get("default_learner", "default"))
 HISTORY_MESSAGES = int(
     cfg["llm"]["profiles"][cfg["llm"]["active"]].get("history_messages", 20))
@@ -198,6 +203,7 @@ class Session:
         self.vocab: set[str] = set()
         self.tracked: set[str] = set()
         self.plan = state_block.Plan()
+        self.portrait = profile.Profile()
         self.session_id: int | None = None
         if TEACHING:
             self.open_learner(DEFAULT_LEARNER)
@@ -209,6 +215,7 @@ class Session:
         self.learner = learner
         self.history.clear()
         self.store = Store(learner, data_root())
+        self.portrait = profile.load(profile.path_for(data_root(), learner))
         self.load_curriculum()
 
     def load_curriculum(self):
@@ -340,6 +347,20 @@ def record_turn(sess: Session, learner_text: str, spoken: list[str],
                         sorted(set(taught) | set(heard)), interrupted)
 
 
+async def write_portrait(sess: Session):
+    """Update a learner's portrait from the session that just ended.
+
+    The socket is already closed when this runs, so a slow or a broken
+    summary cannot cost the child a reply.
+    """
+    try:
+        await digest.write(llm, sess.store,
+                           profile.path_for(data_root(), sess.learner),
+                           sess.session_id)
+    except Exception as e:
+        log.warning("portrait update failed for %s: %s", sess.learner, e)
+
+
 def build_messages(sess: Session, text: str) -> list[dict]:
     """Prompt for one turn: stable rules, then history, then the plan.
 
@@ -350,7 +371,7 @@ def build_messages(sess: Session, text: str) -> list[dict]:
     """
     plan = state_block.Plan()
     if sess.store is not None and sess.units:
-        plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS)
+        plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS, sess.portrait)
     sess.plan = plan   # the turn's bookkeeping credits what was asked for
     block = state_block.render(plan, BLOCK_CAPS)
     messages = [{"role": "system", "content": sess.system_prompt()}]
@@ -550,6 +571,8 @@ async def ws_endpoint(ws: WebSocket):
         await cancel_turn(sess)
         if sess.vad_task:
             sess.vad_task.cancel()
+        if DIGEST_MODE == "on_disconnect" and sess.session_id is not None:
+            await write_portrait(sess)
         sess.close()
         session_by_ws.pop(ws, None)
 

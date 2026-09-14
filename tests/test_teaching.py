@@ -8,14 +8,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
 from orchestrator import main
 from orchestrator.config import load
-from orchestrator.teaching import curriculum, match, scheduler, state_block
+from orchestrator.teaching import (curriculum, digest, match, profile,
+                                   scheduler, state_block)
 from orchestrator.teaching.curriculum import CurriculumError, Unit
 from orchestrator.teaching.store import Store
+
+
+class FakeLLM:
+    """Stands in for the tutor model, replying with a fixed string."""
+
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.prompts = []
+
+    async def stream_chat(self, messages, cancel=None, max_tokens=None):
+        self.prompts.append(messages)
+        yield self.reply
 
 UNITS = [
     Unit(id="colors", title="颜色", goal="", words=("red", "blue"),
@@ -241,6 +256,75 @@ class TestStateBlock:
         plan = state_block.Plan(portrait=["x" * 80])
         assert state_block.render(plan, state_block.Caps(line_chars=10)) == \
             "【画像: " + "x" * 9 + "…】"
+
+
+class TestProfile:
+    def test_missing_file_is_an_empty_portrait(self, tmp_path):
+        assert profile.load(tmp_path / "profile.md") == profile.Profile()
+
+    def test_roundtrip(self, tmp_path):
+        path = tmp_path / "profile.md"
+        profile.save(path, profile.Profile(notes=["喜欢恐龙"],
+                                           recent=["聊了家里的猫"]))
+        assert profile.load(path) == profile.Profile(notes=["喜欢恐龙"],
+                                                     recent=["聊了家里的猫"])
+
+    def test_hand_written_file_parses(self, tmp_path):
+        path = tmp_path / "profile.md"
+        path.write_text("# 学习者画像\n\n## 画像\n\n- 喜欢恐龙\n- 怕黑\n"
+                        "\n## 最近\n\n- 聊了猫\n", encoding="utf-8")
+        loaded = profile.load(path)
+        assert loaded.notes == ["喜欢恐龙", "怕黑"]
+        assert loaded.recent == ["聊了猫"]
+
+    def test_path_for(self, tmp_path):
+        assert profile.path_for(tmp_path, "xiaoming") == \
+            tmp_path / "learners" / "xiaoming" / "profile.md"
+
+
+class TestDigest:
+    def test_tagged_lines_are_sorted(self):
+        notes, recent = digest.parse(
+            "兴趣: 喜欢恐龙\n错误: three 和 tree 分不清\n本次: 聊了家里的猫")
+        assert notes == ["喜欢恐龙", "three 和 tree 分不清"]
+        assert recent == ["聊了家里的猫"]
+
+    def test_untagged_line_is_kept_as_a_note(self):
+        assert digest.parse("喜欢画画") == (["喜欢画画"], [])
+
+    def test_nothing_to_record_is_dropped(self):
+        assert digest.parse("本次: 无") == ([], [])
+
+    def test_markdown_bullets_are_ignored(self):
+        assert digest.parse("- 兴趣: 喜欢恐龙") == (["喜欢恐龙"], [])
+
+    def test_write_appends_to_the_portrait(self, tmp_path):
+        store = Store("tester", tmp_path)
+        sid = store.start_session("kid")
+        store.log_turn(sid, "我喜欢猫", "Cat 就是猫。", ["cat"])
+        path = profile.path_for(tmp_path, "tester")
+        written = asyncio.run(digest.write(
+            FakeLLM("兴趣: 喜欢猫\n本次: 聊了猫"), store, path, sid))
+        assert written is True
+        saved = profile.load(path)
+        assert "喜欢猫" in saved.notes
+        assert saved.recent == ["聊了猫"]
+        store.close()
+
+    def test_write_without_turns_does_nothing(self, tmp_path):
+        store = Store("tester", tmp_path)
+        sid = store.start_session("kid")
+        assert asyncio.run(digest.write(
+            FakeLLM("兴趣: 喜欢猫"), store,
+            profile.path_for(tmp_path, "tester"), sid)) is False
+        store.close()
+
+    def test_portrait_reaches_the_plan(self, store):
+        portrait = profile.Profile(notes=["喜欢恐龙", "怕黑"], recent=["聊了猫"])
+        plan = scheduler.plan(store, UNITS,
+                              state_block.Caps(portrait_lines=1), portrait)
+        assert plan.portrait == ["怕黑"]      # the newest line
+        assert plan.digest == ["聊了猫"]
 
 
 class TestMatch:

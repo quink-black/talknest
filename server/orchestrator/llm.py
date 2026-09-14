@@ -20,14 +20,15 @@ class LLMClient:
         self._client = httpx.AsyncClient(timeout=180.0, trust_env=False)
 
     async def stream_chat(
-        self, messages: list[dict], cancel: asyncio.Event | None = None
+        self, messages: list[dict], cancel: asyncio.Event | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """Yield content deltas; stops early if `cancel` is set."""
         body = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "max_tokens": self.sampling.get("max_tokens", 300),
+            "max_tokens": max_tokens or self.sampling.get("max_tokens", 300),
             "temperature": self.sampling.get("temperature", 0.7),
             "top_p": self.sampling.get("top_p", 0.8),
             "top_k": self.sampling.get("top_k", 20),

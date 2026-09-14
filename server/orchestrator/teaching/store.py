@@ -199,6 +199,13 @@ class Store:
             (at or now(), digest, session_id))
         self.db.commit()
 
+    def session_turns(self, session_id: int) -> list[dict]:
+        """Turns of one session, for the portrait written at its end."""
+        rows = self.db.execute(
+            "SELECT learner_text, tutor_text, items, interrupted FROM turns "
+            "WHERE session = ? ORDER BY id", (session_id,)).fetchall()
+        return [dict(r) for r in rows]
+
     def log_turn(self, session_id: int, learner_text: str, tutor_text: str,
                  items, interrupted: bool = False, at: str | None = None) -> None:
         self.db.execute(
