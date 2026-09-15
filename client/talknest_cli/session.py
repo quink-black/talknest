@@ -92,8 +92,12 @@ class Session:
             try:
                 await asyncio.gather(*tasks)
             finally:
+                # Awaited, not just cancelled: a pending _receiver would
+                # otherwise outlive the socket and play reply audio into
+                # the next connection.
                 for t in tasks:
                     t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     def stop(self) -> None:
         self._stop = True
@@ -126,10 +130,16 @@ class Session:
 
     async def _receiver(self) -> None:
         async for msg in self.ws:
-            if isinstance(msg, (bytes, bytearray)):
-                self.engine.play(np.frombuffer(msg, dtype="<i2"), self.play_sr)
-            else:
-                self._on_text(json.loads(msg))
+            try:
+                if isinstance(msg, (bytes, bytearray)):
+                    self.engine.play(np.frombuffer(msg, dtype="<i2"), self.play_sr)
+                else:
+                    self._on_text(json.loads(msg))
+            except ValueError:
+                # A frame that is neither int16 PCM nor JSON: drop it. Without
+                # this a single malformed frame escapes run()'s OSError /
+                # WebSocketException handlers and takes the client down.
+                continue
 
     async def _watcher(self) -> None:
         while True:

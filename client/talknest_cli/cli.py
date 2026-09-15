@@ -256,8 +256,14 @@ def _watch_devices(session: Session, in_idx, out_idx, interval: float,
     re-pairs with whatever is present."""
     while not session._stop:
         time.sleep(interval)
-        gone = [kind for idx, kind in ((in_idx, "input"), (out_idx, "output"))
-                if idx is not None and not still_present(idx, kind)]
+        try:
+            gone = [kind for idx, kind in ((in_idx, "input"), (out_idx, "output"))
+                    if idx is not None and not still_present(idx, kind)]
+        except SystemExit:
+            # A device query can fail while the bus is resettling. Raising
+            # here would end monitoring silently, since threading swallows
+            # SystemExit from a thread.
+            continue
         if gone:
             print(f"[devices] {', '.join(gone)} device disappeared; exiting",
                   flush=True)
@@ -275,16 +281,17 @@ async def _run(args, aec: EchoCanceller) -> None:
         in_dev = pick_device(args.input, "input")
     elif not args.output_file:
         out_dev = pick_device(args.output, "output")
-        if (args.aec == "auto" and aec.name != "none"
-                and _over_bluetooth(in_dev, out_dev, args)):
-            # Measured on HFP hardware: per-second loop delays wander across
-            # 172-1090 ms with coherence near zero, so no reference-aligned
-            # canceller can track them. Half duplex is the correct mode.
-            aec.close()
-            aec = NullAec()
-            print("[audio] bluetooth device detected: HFP clock jitter "
-                  "defeats reference-aligned AEC, running half duplex "
-                  "(--aec dtln to override)", flush=True)
+    if (args.aec == "auto" and aec.name != "none"
+            and (in_dev is not None or out_dev is not None)
+            and _over_bluetooth(in_dev, out_dev, args)):
+        # Measured on HFP hardware: per-second loop delays wander across
+        # 172-1090 ms with coherence near zero, so no reference-aligned
+        # canceller can track them. Half duplex is the correct mode.
+        aec.close()
+        aec = NullAec()
+        print("[audio] bluetooth device detected: HFP clock jitter "
+              "defeats reference-aligned AEC, running half duplex "
+              "(--aec dtln to override)", flush=True)
     engine = AudioEngine(
         aec,
         in_dev.index if in_dev else None,

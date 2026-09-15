@@ -189,6 +189,15 @@ class AudioEngine:
         if self._running:
             return
         self._running = True
+        try:
+            self._start()
+        except BaseException:
+            # Half-open state: the first stream would keep the device busy
+            # and never be closed.
+            self.stop()
+            raise
+
+    def _start(self) -> None:
         if self.input_file:
             self._reader = threading.Thread(target=self._read_file, daemon=True)
             self._reader.start()
@@ -267,6 +276,10 @@ class AudioEngine:
             try:
                 block = self._mic_q.get(timeout=0.2)
             except queue.Empty:
+                # No microphone to cancel against (file input, stalled
+                # capture): keep the reference moving anyway, or the queue
+                # fills and the playback callback drops on every call.
+                self._drain_reference()
                 continue
             self._drain_reference()
             proc = self._rs_mic.resample(block)
@@ -309,7 +322,7 @@ class AudioEngine:
         """Feed a WAV as the microphone, paced at real time."""
         try:
             x, sr = read_wav_mono(self.input_file)
-        except SystemExit as exc:
+        except (SystemExit, OSError, wave.Error) as exc:
             print(f"[audio] {exc}; microphone stays silent", flush=True)
             return
         x = resample(x, sr, CLIENT_SR)

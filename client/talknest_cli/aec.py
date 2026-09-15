@@ -80,10 +80,10 @@ class DtlnAec(EchoCanceller):
         # reproduces the reference implementation's startup handling; the
         # cost is the same amount of constant pipeline latency.
         warmup = np.zeros(BLOCK_LEN - BLOCK_SHIFT, dtype=np.float32)
-        self._pending_mic = warmup
+        self._pending_mic = warmup.copy()
         # The echo of a reference sample arrives delay_samples later, so
         # shifting the reference right by that much aligns the two.
-        self._pending_ref = warmup
+        self._pending_ref = warmup.copy()
         if delay_samples > 0:
             self._pending_ref = np.concatenate(
                 (self._pending_ref, np.zeros(delay_samples, dtype=np.float32)))
