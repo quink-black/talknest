@@ -545,7 +545,12 @@ async def cut_off(ws: WebSocket, sess: Session):
 
 async def vad_task(ws: WebSocket, sess: Session):
     while True:
-        pcm = np.frombuffer(await sess.q.get(), dtype="<i2")
+        raw = await sess.q.get()
+        if len(raw) % 2:
+            # Not int16 PCM. Parsing it would raise out of this task and
+            # leave the session streaming into a queue nobody reads.
+            continue
+        pcm = np.frombuffer(raw, dtype="<i2")
         # While the assistant plays, its own voice is in the mic: demand a
         # higher probability before believing a frame is the child.
         thr = BARGE_IN_THRESHOLD if sess.speaking else None
