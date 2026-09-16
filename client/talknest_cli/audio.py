@@ -2,7 +2,7 @@
 
 Three threads plus the asyncio loop:
 
-  PortAudio callbacks   only move samples in and out of queues
+  PortAudio callbacks   only move samples in and out of rings
   dsp thread            resample -> echo cancel -> resample -> frame
   asyncio sender        drains the framed queue onto the socket
 
@@ -27,6 +27,18 @@ except ImportError:
     soxr = None
 
 _WARNED_LINEAR = False
+
+# Capture and reference rings are preallocated, so their capacity is chosen
+# at start(). This many device blocks keeps the margin the old
+# queue.Queue(maxsize=512) had.
+_RING_BLOCKS = 512
+# Reply audio arrives faster than it is played, so the playback ring has to
+# absorb the difference across a whole turn. 30 s of audio is far past any
+# reply and still small enough for a Raspberry Pi.
+_PLAY_RING_SECONDS = 30.0
+# What the dsp thread sleeps for when the capture ring is empty. Short: a
+# longer nap would show up as the same amount of extra upstream latency.
+_DSP_IDLE_S = 0.002
 
 
 def resample(x: np.ndarray, src_sr: float, dst_sr: float) -> np.ndarray:
@@ -98,45 +110,105 @@ def read_wav_mono(path: str) -> tuple[np.ndarray, int]:
     return pcm_to_float(pcm), sr
 
 
-class PcmFifo:
-    """Sample stream that pads reads with silence instead of underrunning."""
+class SpscRing:
+    """Lock-free single-producer single-consumer ring of float32 samples.
 
-    def __init__(self):
-        self._chunks = []
-        self._offset = 0
-        self._size = 0
-        self._lock = threading.Lock()
+    Exactly one thread writes and exactly one thread reads. That is what
+    makes plain integer indices sufficient: the writer alone moves the head
+    and the reader alone moves the tail, so neither can observe a torn
+    value. A reader that sees a slightly stale head just reads a little
+    less, and a writer that sees a slightly stale tail just uses a little
+    less space. This relies on the GIL; a free-threaded build would need
+    atomics.
 
-    def write(self, data: np.ndarray) -> None:
-        with self._lock:
-            self._chunks.append(np.asarray(data, dtype=np.float32))
-            self._size += len(data)
+    Nothing here allocates or takes a lock after construction, so either
+    end may run inside a PortAudio callback.
+    """
 
-    def read(self, n: int) -> np.ndarray:
-        out = np.zeros(n, dtype=np.float32)
-        with self._lock:
-            filled = 0
-            while filled < n and self._chunks:
-                head = self._chunks[0]
-                take = min(n - filled, len(head) - self._offset)
-                out[filled : filled + take] = head[self._offset : self._offset + take]
-                filled += take
-                self._offset += take
-                self._size -= take
-                if self._offset >= len(head):
-                    self._chunks.pop(0)
-                    self._offset = 0
-        return out
+    def __init__(self, capacity: int, drop_oldest: bool = False):
+        self._buf = np.zeros(max(capacity, 1), dtype=np.float32)
+        self._cap = len(self._buf)
+        self._drop_oldest = drop_oldest
+        self._head = 0
+        self._tail = 0
+        self._flush_to = 0
 
-    def clear(self) -> None:
-        with self._lock:
-            self._chunks.clear()
-            self._offset = 0
-            self._size = 0
+    @property
+    def capacity(self) -> int:
+        return self._cap
 
     def available(self) -> int:
-        with self._lock:
-            return self._size
+        return self._head - max(self._tail, self._flush_to)
+
+    def write(self, x: np.ndarray) -> int:
+        """Append samples, returning how many were stored.
+
+        Overflow follows the policy chosen at construction: either the
+        oldest samples give way, or the new ones are dropped.
+        """
+        total = len(x)
+        if total == 0:
+            return 0
+        cap = self._cap
+        if total > cap:
+            x = x[total - cap :]
+            total = cap
+        head = self._head
+        # The tail can lag behind a discard the reader has not applied yet;
+        # treating it as current would report the ring as fuller than it is.
+        space = cap - (head - max(self._tail, self._flush_to))
+        if total > space:
+            if self._drop_oldest:
+                # Give up the oldest samples. Only _flush_to moves, because
+                # it belongs to the writer: the reader drops them for real
+                # on its next read, so the two never race on the tail.
+                self._flush_to = head + total - cap
+            elif space <= 0:
+                return 0
+            else:
+                total = space
+                x = x[:total]
+        start = head % cap
+        first = min(total, cap - start)
+        np.copyto(self._buf[start : start + first], x[:first])
+        if total > first:
+            np.copyto(self._buf[: total - first], x[first:total])
+        self._head = head + total
+        return total
+
+    def read_into(self, out: np.ndarray) -> int:
+        """Fill out from the ring, zeroing what the ring cannot cover.
+
+        Returns how many samples were real audio rather than padding.
+        """
+        n = len(out)
+        if self._flush_to > self._tail:
+            self._tail = self._flush_to
+        take = min(n, self._head - self._tail)
+        if take:
+            cap = self._cap
+            start = self._tail % cap
+            first = min(take, cap - start)
+            np.copyto(out[:first], self._buf[start : start + first])
+            if take > first:
+                np.copyto(out[first:take], self._buf[: take - first])
+            self._tail += take
+        if take < n:
+            out[take:] = 0.0
+        return take
+
+    def read(self, n: int) -> np.ndarray:
+        """Read up to n samples into a new array. Not for the RT thread."""
+        out = np.zeros(n, dtype=np.float32)
+        return out[: self.read_into(out)]
+
+    def discard(self) -> None:
+        """Producer side: drop everything written so far.
+
+        The reader applies it on its next read, so the writer never moves
+        the read index and the two threads never write the same field.
+        """
+        self._flush_to = self._head
 
 
 class AudioEngine:
@@ -152,13 +224,19 @@ class AudioEngine:
         self.output_file = output_file
         self._blocksize = blocksize
         # Silence the "playback ended" report only after the hardware buffer
-        # has drained too; the software FIFO empties while the last samples
+        # has drained too; the playback ring empties while the last samples
         # are still in the device's latency buffer.
         self.play_tail_s = play_tail_s
+        # Only _up stays a Queue: nothing real-time touches it, and the
+        # sender needs a blocking get with a timeout.
         self._up: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=512)
-        self._mic_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=512)
-        self._ref_q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=512)
-        self._play = PcmFifo()
+        self._mic_ring = SpscRing(1)   # capture callback -> dsp thread
+        self._ref_ring = SpscRing(1)   # playback callback -> dsp thread
+        self._play_ring = SpscRing(1)  # reply audio -> playback callback
+        # How much the dsp thread takes from the capture ring at a time:
+        # one device block, so a stalled stretch drains block by block
+        # instead of arriving as one late lump.
+        self._dsp_block = FRAME_SAMPLES
         self._leftover = np.zeros(0, dtype=np.float32)
         self._play_started = False
         self._last_write = 0.0
@@ -198,21 +276,32 @@ class AudioEngine:
             raise
 
     def _start(self) -> None:
+        in_block = out_block = FRAME_SAMPLES
         if self.input_file:
             self._reader = threading.Thread(target=self._read_file, daemon=True)
             self._reader.start()
         else:
             require_portaudio()
             self.in_sr = self._pick_rate("input", self.input_device, CLIENT_SR)
-            self._streams.append(sd.InputStream(
+            stream = sd.InputStream(
                 device=self.input_device, channels=1, samplerate=self.in_sr,
-                dtype="float32", blocksize=self._blocksize, callback=self._in_cb))
+                dtype="float32", blocksize=self._blocksize, callback=self._in_cb)
+            self._streams.append(stream)
+            in_block = stream.blocksize or FRAME_SAMPLES
         if not self.output_file:
             require_portaudio()
             self.out_sr = self._pick_rate("output", self.output_device, CLIENT_SR)
-            self._streams.append(sd.OutputStream(
+            stream = sd.OutputStream(
                 device=self.output_device, channels=1, samplerate=self.out_sr,
-                dtype="float32", blocksize=self._blocksize, callback=self._out_cb))
+                dtype="float32", blocksize=self._blocksize, callback=self._out_cb)
+            self._streams.append(stream)
+            out_block = stream.blocksize or FRAME_SAMPLES
+        # Rings exist before any callback can fire, and are sized from the
+        # block the device actually negotiated.
+        self._dsp_block = in_block
+        self._mic_ring = SpscRing(_RING_BLOCKS * in_block)
+        self._ref_ring = SpscRing(_RING_BLOCKS * out_block, drop_oldest=True)
+        self._play_ring = SpscRing(int(self.out_sr * _PLAY_RING_SECONDS))
         for s in self._streams:
             s.start()
         # Stateful resamplers: one filter instance per chain, so chunked
@@ -221,7 +310,7 @@ class AudioEngine:
         self._rs_up = Resampler(self.aec.proc_sr, CLIENT_SR)
         self._rs_ref = Resampler(self.out_sr, self.aec.proc_sr)
         # Started in file mode too: the playback callback feeds the reference
-        # queue, and an undrained queue overflows inside the RT callback.
+        # ring, and an undrained ring overflows inside the RT callback.
         self._dsp = threading.Thread(target=self._dsp_loop, daemon=True)
         self._dsp.start()
 
@@ -244,28 +333,20 @@ class AudioEngine:
         if status:
             # RT callback: never print here, report from the dsp thread.
             self._rt_status.append(f"capture: {status}")
-        try:
-            self._mic_q.put_nowait(indata[:, 0].copy())
-        except queue.Full:
-            pass  # never raise inside an RT callback; drop instead
+        self._mic_ring.write(indata[:, 0])
 
     def _out_cb(self, outdata, frames, time_info, status):
         if status:
             self._rt_status.append(f"playback: {status}")
-        chunk = self._play.read(frames)
-        outdata[:, 0] = chunk
+        # Read straight into the device buffer and push that same memory as
+        # the reference, so the callback allocates nothing and takes no
+        # lock.
+        out = outdata[:, 0]
+        self._play_ring.read_into(out)
         # The reference must be a continuous timeline: silence is a valid
         # part of it. Skipping silent chunks would shift every later
         # playback against the mic stream and void the delay compensation.
-        try:
-            self._ref_q.put_nowait(chunk.copy())
-        except queue.Full:
-            # dsp thread is behind; keep the newest end of the timeline
-            try:
-                self._ref_q.get_nowait()
-                self._ref_q.put_nowait(chunk.copy())
-            except (queue.Empty, queue.Full):
-                pass
+        self._ref_ring.write(out)
 
     # -- dsp -------------------------------------------------------------
 
@@ -273,26 +354,22 @@ class AudioEngine:
         while self._running:
             while self._rt_status:
                 print(f"[audio] {self._rt_status.pop(0)}", flush=True)
-            try:
-                block = self._mic_q.get(timeout=0.2)
-            except queue.Empty:
-                # No microphone to cancel against (file input, stalled
-                # capture): keep the reference moving anyway, or the queue
+            if self._mic_ring.available():
+                self._drain_reference()
+                proc = self._rs_mic.resample(self._mic_ring.read(self._dsp_block))
+                cleaned = self.aec.process(proc)
+                self._push_upstream(self._rs_up.resample(cleaned))
+            else:
+                # Nothing to cancel against: a file microphone, or a stalled
+                # capture. Keep the reference moving anyway, or the ring
                 # fills and the playback callback drops on every call.
                 self._drain_reference()
-                continue
-            self._drain_reference()
-            proc = self._rs_mic.resample(block)
-            cleaned = self.aec.process(proc)
-            self._push_upstream(self._rs_up.resample(cleaned))
+                time.sleep(_DSP_IDLE_S)
 
     def _drain_reference(self) -> None:
-        while True:
-            try:
-                block = self._ref_q.get_nowait()
-            except queue.Empty:
-                return
-            self.aec.push_reference(self._rs_ref.resample(block))
+        n = self._ref_ring.available()
+        if n:
+            self.aec.push_reference(self._rs_ref.resample(self._ref_ring.read(n)))
 
     def _push_upstream(self, x: np.ndarray) -> None:
         if x.size == 0:
@@ -370,7 +447,7 @@ class AudioEngine:
             if self._rs_play is None or self._rs_play_key != sample_rate:
                 self._rs_play = Resampler(sample_rate, self.out_sr)
                 self._rs_play_key = sample_rate
-            self._play.write(self._rs_play.resample(x))
+            self._play_ring.write(self._rs_play.resample(x))
         self._play_started = True
         self._last_write = time.perf_counter()
 
@@ -389,17 +466,17 @@ class AudioEngine:
         self._wav_out.writeframes(pcm.astype("<i2").tobytes())
 
     def clear_playback(self) -> None:
-        self._play.clear()
+        self._play_ring.discard()
 
     def playback_idle(self) -> bool:
         """True once playback has started and nothing is left to play.
 
-        The FIFO alone empties while the device is still draining its
+        The ring alone empties while the device is still draining its
         latency buffer, so require a quiet period of play_tail_s first.
         """
         if self.output_file:
             return self._play_started
-        return (self._play_started and self._play.available() == 0
+        return (self._play_started and self._play_ring.available() == 0
                 and time.perf_counter() - self._last_write >= self.play_tail_s)
 
     def reset_playback(self) -> None:
@@ -407,4 +484,4 @@ class AudioEngine:
         # clearing is safe) and after a turn ends; leftover audio from an
         # abandoned previous turn must not leak into the next one.
         self._play_started = False
-        self._play.clear()
+        self._play_ring.discard()

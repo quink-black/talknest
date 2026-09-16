@@ -17,7 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "client"))
 
 from talknest_cli import CLIENT_SR, FRAME_SAMPLES  # noqa: E402
-from talknest_cli.audio import AudioEngine  # noqa: E402
+from talknest_cli.audio import AudioEngine, SpscRing  # noqa: E402
 from talknest_cli.session import Session  # noqa: E402
 
 
@@ -95,21 +95,140 @@ class TestReceiverRobustness:
         assert session._state == "listening"
 
 
+class TestSpscRing:
+    def test_round_trip_keeps_order(self):
+        ring = SpscRing(8)
+        x = np.arange(8, dtype=np.float32)
+        assert ring.write(x) == 8
+        assert ring.available() == 8
+        assert np.array_equal(ring.read(8), x)
+
+    def test_wrap_around(self):
+        """Many small writes and reads must not lose or reorder samples."""
+        ring = SpscRing(8)
+        sent, got = [], []
+        for i in range(40):
+            x = np.full(3, i, dtype=np.float32)
+            # The ring is small on purpose: the surplus is dropped, so only
+            # what write() took may be expected back.
+            sent.extend(x.tolist()[: ring.write(x)])
+            got.extend(ring.read(2).tolist())
+        got.extend(ring.read(ring.available()).tolist())
+        assert got == sent[: len(got)], "order must survive wrapping"
+
+    def test_read_pads_with_silence(self):
+        ring = SpscRing(8)
+        ring.write(np.ones(3, dtype=np.float32))
+        out = np.full(6, -1.0, dtype=np.float32)
+        assert ring.read_into(out) == 3
+        assert np.array_equal(out, [1, 1, 1, 0, 0, 0])
+
+    def test_full_ring_drops_the_new_samples(self):
+        ring = SpscRing(4)
+        ring.write(np.ones(4, dtype=np.float32))
+        assert ring.write(np.full(2, 9.0, dtype=np.float32)) == 0
+        assert np.array_equal(ring.read(4), np.ones(4))
+
+    def test_full_ring_can_drop_the_oldest_instead(self):
+        ring = SpscRing(4, drop_oldest=True)
+        ring.write(np.zeros(4, dtype=np.float32))
+        ring.write(np.full(2, 7.0, dtype=np.float32))
+        assert np.array_equal(ring.read(4), [0, 0, 7, 7])
+
+    def test_write_larger_than_the_ring_keeps_the_tail(self):
+        ring = SpscRing(4, drop_oldest=True)
+        assert ring.write(np.arange(10, dtype=np.float32)) == 4
+        assert np.array_equal(ring.read(4), [6, 7, 8, 9])
+
+    def test_write_after_discard_reuses_the_whole_ring(self):
+        ring = SpscRing(8)
+        ring.write(np.ones(8, dtype=np.float32))
+        ring.discard()
+        # The discarded samples are already gone even though the reader has
+        # not run, so their space must count as free.
+        assert ring.write(np.full(8, 2.0, dtype=np.float32)) == 8
+        assert np.array_equal(ring.read(8), np.full(8, 2.0))
+
+    def test_concurrent_write_and_read_keep_the_stream_intact(self):
+        """A ramp pushed from one thread must come out whole on the other."""
+        ring = SpscRing(4096)
+        total = 200_000
+        got: list[float] = []
+        done = threading.Event()
+
+        def produce():
+            sent = 0
+            chunk = np.zeros(64, dtype=np.float32)
+            while sent < total:
+                n = min(64, total - sent, ring.capacity - ring.available())
+                if n:
+                    chunk[:n] = np.arange(sent, sent + n, dtype=np.float32)
+                    ring.write(chunk[:n])
+                    sent += n
+            done.set()
+
+        def consume():
+            out = np.zeros(64, dtype=np.float32)
+            while not (done.is_set() and ring.available() == 0):
+                n = ring.read_into(out)
+                if n:
+                    got.extend(out[:n].tolist())
+
+        writer = threading.Thread(target=produce)
+        reader = threading.Thread(target=consume)
+        writer.start()
+        reader.start()
+        writer.join(timeout=30)
+        reader.join(timeout=30)
+        assert got == list(range(total))
+
+    def test_discard_from_the_producer_side(self):
+        ring = SpscRing(8)
+        ring.write(np.ones(5, dtype=np.float32))
+        ring.discard()
+        assert ring.available() == 0
+        ring.write(np.full(2, 3.0, dtype=np.float32))
+        assert np.array_equal(ring.read(2), [3, 3])
+
+
+class TestPlaybackCallback:
+    def test_out_cb_fills_the_device_buffer_and_the_reference(self):
+        """The callback must not allocate a copy on its way to the
+        reference: it reads into the device buffer and pushes that."""
+        engine = AudioEngine(FakeAec())
+        engine._play_ring = SpscRing(1024)
+        engine._ref_ring = SpscRing(1024, drop_oldest=True)
+        engine._play_ring.write(np.array([0.1, 0.2, 0.3], dtype=np.float32))
+        outdata = np.full((6, 1), -1.0, dtype=np.float32)
+        engine._out_cb(outdata, 6, None, None)
+        assert np.allclose(outdata[:, 0], [0.1, 0.2, 0.3, 0, 0, 0])
+        assert np.allclose(engine._ref_ring.read(6), [0.1, 0.2, 0.3, 0, 0, 0])
+
+    def test_discarded_playback_is_not_played(self):
+        engine = AudioEngine(FakeAec())
+        engine._play_ring = SpscRing(1024)
+        engine._play_ring.write(np.ones(100, dtype=np.float32))
+        engine.clear_playback()
+        assert engine._play_ring.available() == 0
+        out = np.full((8, 1), -1.0, dtype=np.float32)
+        engine._out_cb(out, 8, None, None)
+        assert np.array_equal(out[:, 0], np.zeros(8))
+
+
 class TestDspLoop:
     def test_reference_drains_without_a_microphone(self, tmp_path):
-        """File microphone: nothing feeds _mic_q, so the reference queue
-        must still be emptied or the playback callback drops on every call."""
+        """File microphone: nothing feeds the capture ring, so the reference
+        ring must still be emptied or the playback callback drops."""
         aec = FakeAec()
         engine = AudioEngine(aec, input_file=str(tmp_path / "in.wav"),
                              output_file=str(tmp_path / "out.wav"))
         engine.start()
         try:
-            for _ in range(4):
-                engine._ref_q.put_nowait(np.zeros(1024, dtype=np.float32))
+            engine._ref_ring.write(np.zeros(4096, dtype=np.float32))
             deadline = time.time() + 3.0
-            while time.time() < deadline and engine._ref_q.qsize():
+            while time.time() < deadline and engine._ref_ring.available():
                 time.sleep(0.05)
-            assert engine._ref_q.qsize() == 0
+            assert engine._ref_ring.available() == 0
             assert aec.ref > 0, "the reference must reach the canceller"
         finally:
             engine.stop()
@@ -127,6 +246,8 @@ class TestStartCleanup:
         opened = []
 
         class FakeStream:
+            blocksize = 512
+
             def __init__(self, **kwargs):
                 self.closed = False
                 opened.append(self)
