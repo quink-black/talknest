@@ -45,6 +45,14 @@ SCRIPT = [
 ]
 # Seeded as already known: the tutor must not present these as new.
 KNOWN = ["red", "blue"]
+# A one-syllable Chinese turn the recogniser can produce instead of the
+# word being drilled: what ASR wrote, the word in the plan, the English a
+# tutor must not switch to, and the gloss the tutor used for the drill.
+MISHEARINGS = [
+    ("爱", "I", "love", "我"),
+    ("热的", "red", "hot", "红色"),
+    ("海", "hi", "sea", "你好"),
+]
 ENGLISH = re.compile(r"[a-zA-Z]")
 CJK = re.compile(r"[一-鿿]")
 FRAMES = [re.compile(r"英文是\s*([a-z]+)"), re.compile(r"([a-z]+)\s*的英文是")]
@@ -110,7 +118,36 @@ async def run(sess, utterances, with_plan: bool) -> dict:
     }
 
 
-def report(cfg: dict, rounds: int, planned: dict, baseline: dict) -> str:
+async def run_mishearings(sess) -> dict:
+    """Short Chinese turns that are really the drilled word misheard.
+
+    Each case puts the word in the plan, has the tutor drill it, then has
+    the child "say" the Chinese the recogniser is liable to write instead.
+    A tutor that follows the plan takes it as an attempt at the word; one
+    that does not teaches the English for the Chinese it just read.
+    """
+    hit, trapped, replies = 0, [], []
+    for heard, word, trap, gloss in MISHEARINGS:
+        block = orch.state_block.render(orch.state_block.Plan(new=[word]))
+        messages = [{"role": "system", "content": sess.system_prompt()},
+                    {"role": "user", "content": f"{block}\n\n{gloss}怎么说"},
+                    {"role": "assistant", "content":
+                     f"{gloss}的英文是 {word}。跟我读一遍：{word}！"},
+                    {"role": "user", "content": f"{block}\n\n{heard}"}]
+        reply = ""
+        async for delta in orch.llm.stream_chat(messages):
+            reply += delta
+        low = reply.lower()
+        if re.search(rf"\b{re.escape(word.lower())}\b", low):
+            hit += 1
+        if re.search(rf"\b{re.escape(trap.lower())}\b", low):
+            trapped.append(f"{heard} -> {trap}")
+        replies.append((heard, word, reply.strip()))
+    return {"hit": hit, "trapped": trapped, "replies": replies}
+
+
+def report(cfg: dict, rounds: int, planned: dict, baseline: dict,
+           mis: dict) -> str:
     profile = cfg["llm"]["profiles"][cfg["llm"]["active"]]
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -132,6 +169,18 @@ def report(cfg: dict, rounds: int, planned: dict, baseline: dict) -> str:
         "| reasoning leaked | " + str(planned["leaked"]) + " |",
         "| English share of reply (median) | " + str(planned["share"]) + " |",
         "",
+        "## Misheard one-syllable turns", "",
+        "| Metric | with plan block |",
+        "|---|---|",
+        f"| taken as the drilled word | {mis['hit']}/{len(MISHEARINGS)} |",
+        f"| taught the Chinese instead | {len(mis['trapped'])} |",
+        "",
+        "| ASR wrote | drilled | tutor replied |",
+        "|---|---|---|",
+    ]
+    for heard, word, reply in mis["replies"]:
+        lines.append(f"| {heard} | {word} | {' '.join(reply.split())[:120]} |")
+    lines += [
         "## Latency", "",
         "| | TTFT median | Total median |",
         "|---|---|---|",
@@ -160,6 +209,7 @@ async def main_async(args) -> int:
         planned_session.store.set_box(word, orch.MASTERY_BOX)
     try:
         planned = await run(planned_session, utterances, with_plan=True)
+        mis = await run_mishearings(planned_session)
         baseline_session = orch.Session()
         baseline_session.open_learner("eval-baseline")
         baseline = await run(baseline_session, utterances, with_plan=False)
@@ -177,8 +227,13 @@ async def main_async(args) -> int:
           f"{planned['ttft']} ms")
     print(f"total baseline / with block:      {baseline['total']} / "
           f"{planned['total']} ms")
+    print(f"misheard taken as drilled:        {mis['hit']}/{len(MISHEARINGS)}")
+    print(f"misheard taught as Chinese:       {len(mis['trapped'])}"
+          + (": " + ", ".join(mis["trapped"]) if mis["trapped"] else ""))
+    for heard, word, reply in mis["replies"]:
+        print(f"  [{heard} / {word}] {' '.join(reply.split())[:110]}")
 
-    text = report(load(), len(utterances), planned, baseline)
+    text = report(load(), len(utterances), planned, baseline, mis)
     if args.write:
         Path(args.write).write_text(text, encoding="utf-8")
         print(f"wrote {args.write}")
