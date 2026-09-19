@@ -52,29 +52,53 @@
   /* Geometry transforms anchor inside the SVG box, not the page. */
   .av-eye, .av-mouth, .av-brow, .av-eye-look { transform-box: fill-box;
                                                transform-origin: center; }
-  #avatar .av-mouth { transform: scaleY(.3); }
+  .av-headgrp, .av-arm { transform-box: fill-box;
+                         transform-origin: center bottom; }
+  #avatar .av-mouth { opacity: 0; }
+  #avatar.speaking .av-mouth { opacity: 1; }
+  #avatar.speaking .av-smile { opacity: 0; }
   #avatar .av-thought { opacity: 0; }
   #avatar.thinking .av-thought { opacity: 1; }
+  #avatar.thinking .av-headgrp { transform: rotate(-4deg); }
   #avatar.thinking .av-eye-look { transform: translateY(-3px); }
   #avatar.thinking .av-brow { transform: translateY(-2px); }
   #avatar.blinking .av-eye { transform: scaleY(.08); }
+  #avatar.speaking .av-arm { animation: av-gesture 1.4s ease-in-out infinite; }
+  #avatar.speaking .av-headgrp { animation: av-nod 1.1s ease-in-out infinite; }
+  #avatar.listening .av-headgrp { animation: av-sway 4.5s ease-in-out infinite; }
   .av-float { animation: av-breathe 3.4s ease-in-out infinite; }
   @keyframes av-breathe { 0%, 100% { transform: translateY(0); }
                           50% { transform: translateY(-2px); } }
+  @keyframes av-gesture { 0%, 100% { transform: rotate(0); }
+                          50% { transform: rotate(-9deg); } }
+  @keyframes av-nod { 0%, 100% { transform: rotate(0); }
+                      50% { transform: rotate(2.4deg); } }
+  @keyframes av-sway { 0%, 100% { transform: rotate(-1.4deg); }
+                       50% { transform: rotate(1.4deg); } }
   @media (prefers-reduced-motion: reduce) {
-    .av-float { animation: none; }
+    .av-float, .av-arm, .av-headgrp { animation: none; }
     #avatar.blinking .av-eye { transform: none; }
   }
-  .av-back { fill: #f1ece2; }
+  .av-back { fill: #f6f0e4; }
   .av-body { fill: #5b8fc9; }
   .av-shirt { fill: #fff; }
-  .av-skin { fill: #f6d5b8; }
-  .av-neck { fill: #eccbab; }
-  .av-hair { fill: #4b3a2c; }
-  .av-glasses { fill: none; stroke: #33363b; stroke-width: 2.5; }
-  .av-eye { fill: #2b2b2b; }
-  .av-brow { fill: none; stroke: #4b3a2c; stroke-width: 2.5;
+  .av-button { fill: #3f6fa8; }
+  .av-sleeve { fill: none; stroke: #5b8fc9; stroke-width: 12;
+               stroke-linecap: round; }
+  .av-skin { fill: #ffdfc4; }
+  .av-neck { fill: #f2cfae; }
+  .av-hair { fill: #6d4c3b; }
+  .av-bow { fill: #ef8f78; }
+  .av-glasses { fill: none; stroke: #4a3f35; stroke-width: 2.5; }
+  .av-eye { fill: #3a2e26; }
+  .av-eye-hi { fill: #fff; }
+  .av-blush { fill: #f6a89e; opacity: .7; }
+  .av-nose { fill: none; stroke: #e0a887; stroke-width: 2;
              stroke-linecap: round; }
+  .av-brow { fill: none; stroke: #6d4c3b; stroke-width: 2.5;
+             stroke-linecap: round; }
+  .av-smile { fill: none; stroke: #b0645c; stroke-width: 2.5;
+              stroke-linecap: round; }
   .av-mouth { fill: #a8584f; }
   .av-book { fill: #fff; stroke: #4b3a2c; stroke-width: 2; }
   .av-booktext { fill: #4b3a2c; font-size: 15px; font-weight: 600; }
@@ -132,36 +156,59 @@
       <g class="av-float">
         <path class="av-body" d="M80 118 C54 118 36 134 32 166 C30 184 37 196 48 196
                                  L112 196 C123 196 130 184 128 166 C124 134 106 118 80 118 Z"/>
-        <path class="av-shirt" d="M80 118 C70 118 62 125 58 135 L80 152 L102 135
-                                  C98 125 90 118 80 118 Z"/>
-        <rect class="av-neck" x="71" y="98" width="18" height="24" rx="8"/>
-        <ellipse class="av-skin" cx="80" cy="74" rx="33" ry="37"/>
-        <circle class="av-skin" cx="47" cy="77" r="5"/>
-        <circle class="av-skin" cx="113" cy="77" r="5"/>
-        <path class="av-hair" d="M47 72 C43 44 58 30 80 30 C102 30 117 44 113 72
-                                 C106 54 98 46 80 46 C62 46 54 54 47 72 Z"/>
-        <circle class="av-hair" cx="80" cy="25" r="10"/>
-        <g class="av-glasses">
-          <circle cx="67" cy="74" r="12"/>
-          <circle cx="93" cy="74" r="12"/>
-          <path d="M79 74 h2"/>
-          <path d="M55 72 l-5 -3"/>
-          <path d="M105 72 l5 -3"/>
+        <path class="av-shirt" d="M80 118 C71 118 63 125 59 136 L80 150 L101 136
+                                  C97 125 89 118 80 118 Z"/>
+        <circle class="av-button" cx="80" cy="160" r="2.6"/>
+        <circle class="av-button" cx="80" cy="172" r="2.6"/>
+        <g class="av-headgrp">
+          <rect class="av-neck" x="72" y="102" width="16" height="18" rx="7"/>
+          <ellipse class="av-skin" cx="80" cy="76" rx="38" ry="42"/>
+          <circle class="av-skin" cx="42" cy="80" r="5.5"/>
+          <circle class="av-skin" cx="118" cy="80" r="5.5"/>
+          <path class="av-hair" d="M42 82 C36 38 56 24 80 24 C104 24 124 38 118 82
+                                   C113 56 104 46 92 44 C88 54 78 58 68 56
+                                   C58 54 50 60 46 70 C44 74 43 78 42 82 Z"/>
+          <circle class="av-hair" cx="80" cy="26" r="11"/>
+          <g class="av-bow">
+            <path d="M94 24 l13 -7 l-2 12 z"/>
+            <path d="M94 24 l12 9 l-12 3 z"/>
+            <circle cx="95" cy="25" r="3.2"/>
+          </g>
+          <ellipse class="av-blush" cx="52" cy="96" rx="7" ry="4.5"/>
+          <ellipse class="av-blush" cx="108" cy="96" rx="7" ry="4.5"/>
+          <path class="av-nose" d="M78 91 q2 3 4 0"/>
+          <g class="av-eye-look">
+            <g class="av-eye">
+              <circle cx="64" cy="82" r="6"/>
+              <circle class="av-eye-hi" cx="66" cy="80" r="2"/>
+            </g>
+            <g class="av-eye">
+              <circle cx="96" cy="82" r="6"/>
+              <circle class="av-eye-hi" cx="98" cy="80" r="2"/>
+            </g>
+          </g>
+          <path class="av-brow" d="M54 68 q10 -4 19 -1"/>
+          <path class="av-brow" d="M87 67 q10 -3 19 1"/>
+          <g class="av-glasses">
+            <circle cx="64" cy="82" r="14"/>
+            <circle cx="96" cy="82" r="14"/>
+            <path d="M78 82 h4"/>
+            <path d="M50 79 l-6 -3"/>
+            <path d="M110 79 l6 -3"/>
+          </g>
+          <path class="av-smile" d="M71 100 q9 8 18 0"/>
+          <ellipse class="av-mouth" id="avMouth" cx="80" cy="101" rx="9" ry="7"/>
         </g>
-        <g class="av-eye-look">
-          <circle class="av-eye" cx="67" cy="74" r="4.2"/>
-          <circle class="av-eye" cx="93" cy="74" r="4.2"/>
+        <g class="av-arm">
+          <path class="av-sleeve" d="M120 134 Q140 128 144 108 Q146 96 138 90"/>
+          <circle class="av-skin" cx="137" cy="87" r="8"/>
         </g>
-        <path class="av-brow" d="M57 61 q10 -5 19 -1"/>
-        <path class="av-brow" d="M84 60 q10 -4 19 1"/>
-        <ellipse class="av-mouth" id="avMouth" cx="80" cy="93" rx="9" ry="5"/>
         <g class="av-book">
           <rect x="46" y="152" width="68" height="40" rx="4"/>
           <path d="M80 152 v40"/>
         </g>
         <text class="av-booktext" x="80" y="177" text-anchor="middle">ABC</text>
         <circle class="av-skin" cx="45" cy="173" r="7"/>
-        <circle class="av-skin" cx="115" cy="173" r="7"/>
       </g>
       <g class="av-thought">
         <circle cx="126" cy="40" r="4"/>
