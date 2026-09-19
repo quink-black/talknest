@@ -41,14 +41,22 @@
   #words th, #words td { text-align: left; }
   #words td:last-child { text-align: right; white-space: nowrap; }
   #words button { font-size: .8rem; padding: .25rem .5rem; margin-left: .25rem; }
-  /* Wide screens: conversation on the left, settings in a sidebar. Narrow
-     screens: settings stack above the conversation, as before. */
-  #layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+  /* Wide screens: conversation on the left, settings in a sidebar. The
+     conversation is capped: past ~800px a chat column is all empty margin,
+     and the extra width serves the sidebar better. Narrow screens: the
+     settings stack above the conversation, as before. */
+  #layout { display: grid; grid-template-columns: minmax(0, 800px) minmax(300px, 1fr);
            grid-template-areas: "main side"; gap: 1.5rem; align-items: start; }
   #mainCol { grid-area: main; min-width: 0; }
   aside { grid-area: side; background: #fff; border: 1px solid #e2e0da;
           border-radius: 10px; padding: .9rem 1rem; }
-  aside .controls { margin: 0 0 .8rem; flex-wrap: wrap; }
+  /* A tidy settings panel: selects full width, the two buttons share a
+     row, the toggle gets its own. */
+  aside .controls { display: grid; grid-template-columns: 1fr 1fr;
+                    gap: .5rem .6rem; margin: 0 0 .8rem; }
+  aside .controls select { width: 100%; min-width: 0; }
+  aside .controls #learner, aside .controls #mode,
+  aside .controls .dev { grid-column: 1 / -1; }
   aside .devices { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: .5rem; }
   aside .dev { white-space: nowrap; min-width: 0; }
   /* A select sizes itself to its longest option, so without min-width: 0
@@ -83,7 +91,15 @@
               transition: opacity .22s ease; }
   .av-frame.on { opacity: 1; }
   .av-frame.av-flip { transform: translateX(-50%) scaleX(-1); }
-  .av-pose { transform-origin: center bottom; }
+  .av-pose { transform-origin: center bottom; transition: transform .3s ease; }
+  #avatar { cursor: pointer; }
+  /* Leans in while the child is talking. */
+  #avatar.hearing .av-pose { transform: scale(1.045); }
+  #avatar.boing .av-pose { animation: av-boing .55s ease; }
+  @keyframes av-boing { 0% { transform: scale(1, 1); }
+                        35% { transform: scale(1.06, .92); }
+                        70% { transform: scale(.96, 1.06); }
+                        100% { transform: scale(1, 1); } }
   .av-bob { transform-origin: center bottom;
             animation: av-breathe 3.4s ease-in-out infinite; }
   #avatar.listening .av-bob { animation: av-breathe 3.4s ease-in-out infinite,
@@ -102,7 +118,7 @@
   @keyframes av-sway { 0%, 100% { transform: rotate(-1.4deg); }
                        50% { transform: rotate(1.4deg); } }
   @media (prefers-reduced-motion: reduce) {
-    .av-bob { animation: none; }
+    .av-bob, #avatar.boing .av-pose { animation: none; }
   }
 </style>
 </head>
