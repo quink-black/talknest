@@ -41,6 +41,46 @@
   #words th, #words td { text-align: left; }
   #words td:last-child { text-align: right; white-space: nowrap; }
   #words button { font-size: .8rem; padding: .25rem .5rem; margin-left: .25rem; }
+  #stage { display: flex; gap: 1rem; align-items: flex-start; }
+  #avatar { flex: 0 0 150px; }
+  #avatar[hidden] { display: none; }
+  #transcript { flex: 1 1 auto; }
+  @media (max-width: 520px) {
+    #stage { flex-direction: column; }
+    #avatar { flex: 0 0 auto; width: 120px; margin: 0 auto; }
+  }
+  /* Geometry transforms anchor inside the SVG box, not the page. */
+  .av-eye, .av-mouth, .av-brow, .av-eye-look { transform-box: fill-box;
+                                               transform-origin: center; }
+  #avatar .av-mouth { transform: scaleY(.3); }
+  #avatar .av-thought { opacity: 0; }
+  #avatar.thinking .av-thought { opacity: 1; }
+  #avatar.thinking .av-eye-look { transform: translateY(-3px); }
+  #avatar.thinking .av-brow { transform: translateY(-2px); }
+  #avatar.blinking .av-eye { transform: scaleY(.08); }
+  .av-float { animation: av-breathe 3.4s ease-in-out infinite; }
+  @keyframes av-breathe { 0%, 100% { transform: translateY(0); }
+                          50% { transform: translateY(-2px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .av-float { animation: none; }
+    #avatar.blinking .av-eye { transform: none; }
+  }
+  .av-back { fill: #f1ece2; }
+  .av-body { fill: #5b8fc9; }
+  .av-shirt { fill: #fff; }
+  .av-skin { fill: #f6d5b8; }
+  .av-neck { fill: #eccbab; }
+  .av-hair { fill: #4b3a2c; }
+  .av-glasses { fill: none; stroke: #33363b; stroke-width: 2.5; }
+  .av-eye { fill: #2b2b2b; }
+  .av-brow { fill: none; stroke: #4b3a2c; stroke-width: 2.5;
+             stroke-linecap: round; }
+  .av-mouth { fill: #a8584f; }
+  .av-book { fill: #fff; stroke: #4b3a2c; stroke-width: 2; }
+  .av-booktext { fill: #4b3a2c; font-size: 15px; font-weight: 600; }
+  .av-thought circle, .av-thought ellipse { fill: #fff; stroke: #c8c3b7;
+                                            stroke-width: 1.5; }
+  .av-thought text { fill: #8a8579; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -62,6 +102,7 @@
   </select>
   <button id="interruptBtn">停下</button>
   <button id="pauseBtn">暂停</button>
+  <label class="dev"><input type="checkbox" id="avatarToggle"> 老师形象</label>
 </div>
 
 <details id="parent">
@@ -84,7 +125,55 @@
 
 <button id="startBtn">点我开始对话</button>
 
-<div id="transcript"></div>
+<div id="stage">
+  <div id="avatar" hidden aria-hidden="true">
+    <svg viewBox="0 0 160 200">
+      <ellipse class="av-back" cx="80" cy="106" rx="66" ry="84"/>
+      <g class="av-float">
+        <path class="av-body" d="M80 118 C54 118 36 134 32 166 C30 184 37 196 48 196
+                                 L112 196 C123 196 130 184 128 166 C124 134 106 118 80 118 Z"/>
+        <path class="av-shirt" d="M80 118 C70 118 62 125 58 135 L80 152 L102 135
+                                  C98 125 90 118 80 118 Z"/>
+        <rect class="av-neck" x="71" y="98" width="18" height="24" rx="8"/>
+        <ellipse class="av-skin" cx="80" cy="74" rx="33" ry="37"/>
+        <circle class="av-skin" cx="47" cy="77" r="5"/>
+        <circle class="av-skin" cx="113" cy="77" r="5"/>
+        <path class="av-hair" d="M47 72 C43 44 58 30 80 30 C102 30 117 44 113 72
+                                 C106 54 98 46 80 46 C62 46 54 54 47 72 Z"/>
+        <circle class="av-hair" cx="80" cy="25" r="10"/>
+        <g class="av-glasses">
+          <circle cx="67" cy="74" r="12"/>
+          <circle cx="93" cy="74" r="12"/>
+          <path d="M79 74 h2"/>
+          <path d="M55 72 l-5 -3"/>
+          <path d="M105 72 l5 -3"/>
+        </g>
+        <g class="av-eye-look">
+          <circle class="av-eye" cx="67" cy="74" r="4.2"/>
+          <circle class="av-eye" cx="93" cy="74" r="4.2"/>
+        </g>
+        <path class="av-brow" d="M57 61 q10 -5 19 -1"/>
+        <path class="av-brow" d="M84 60 q10 -4 19 1"/>
+        <ellipse class="av-mouth" id="avMouth" cx="80" cy="93" rx="9" ry="5"/>
+        <g class="av-book">
+          <rect x="46" y="152" width="68" height="40" rx="4"/>
+          <path d="M80 152 v40"/>
+        </g>
+        <text class="av-booktext" x="80" y="177" text-anchor="middle">ABC</text>
+        <circle class="av-skin" cx="45" cy="173" r="7"/>
+        <circle class="av-skin" cx="115" cy="173" r="7"/>
+      </g>
+      <g class="av-thought">
+        <circle cx="126" cy="40" r="4"/>
+        <circle cx="133" cy="29" r="6"/>
+        <ellipse cx="144" cy="16" rx="13" ry="9"/>
+        <text x="144" y="20" text-anchor="middle">…</text>
+      </g>
+    </svg>
+  </div>
+
+  <div id="transcript"></div>
+</div>
 <p class="hint">麦克风常开：直接对着麦克风说话就行，说完停顿一下会自动接话；
 对方说话时也可以直接插话打断。蓝牙耳机等设备的插拔会自动暂停并在设备回来后
 自动继续；手动暂停不会被自动恢复。默认输出跟随麦克风所在的设备（蓝牙耳机

@@ -28,11 +28,16 @@ let playNextAt = 0, sources = [];
 let playbackActive = false, audioEnded = false, playSr = CLIENT_SR;
 let replyBubble = null;
 
+/* Teacher avatar: decorative, so it is driven entirely from state the page
+   already has -- never from anything the server would have to add. */
+let avatarOn = false, avatarKind = "idle";
+let analyser = null, avatarBuf = null, avatarRaf = 0;
+
 /* Picked in the UI and remembered across reloads. An empty id means auto:
    the microphone follows the browser default, the speaker follows whatever
    device the microphone belongs to. */
 const PREF_KEY = { mic: "talknest.mic", spk: "talknest.spk",
-                   learner: "talknest.learner" };
+                   learner: "talknest.learner", avatar: "talknest.avatar" };
 let audioInputs = [], audioOutputs = [];
 let preferredMicId = "", preferredSpkId = "";
 let appliedSpkId = "";   // null forces applyOutputDevice to try again
@@ -41,6 +46,67 @@ let sinkWarned = null;   // only warn once per failed target
 function setStatus(text, busy) {
   $("status").textContent = STATUS_TEXT[text] || text;
   $("statusDot").className = busy ? "dot busy" : "dot idle";
+  avatarKind = (text === "thinking" || text === "preparing") ? "thinking"
+             : (text === "listening" || text === "hearing") ? "listening"
+             : "idle";
+  refreshAvatar();
+}
+
+/* Speaking is not a status the server sends reliably, so it comes from the
+   audio itself: playbackActive is on between audio_start and the last chunk
+   actually draining. */
+function refreshAvatar() {
+  const el = $("avatar");
+  if (!el) return;
+  el.classList.remove("idle", "listening", "thinking", "speaking");
+  el.classList.add(playbackActive ? "speaking" : avatarKind);
+  // Nothing else is guaranteed to run once the last chunk drains.
+  if (!playbackActive) $("avMouth").style.transform = "";
+}
+
+function startAvatarLoop() {
+  if (!avatarOn || avatarRaf) return;
+  avatarRaf = requestAnimationFrame(avatarTick);
+}
+
+function avatarTick() {
+  avatarRaf = 0;
+  const mouth = $("avMouth");
+  if (!avatarOn || !playbackActive || !analyser || !mouth) {
+    if (mouth) mouth.style.transform = "";
+    return;
+  }
+  analyser.getByteTimeDomainData(avatarBuf);
+  let sum = 0;
+  for (let i = 0; i < avatarBuf.length; i++) {
+    const v = (avatarBuf[i] - 128) / 128;
+    sum += v * v;
+  }
+  // Speech sits around 0.05-0.25 RMS; the rest maps to a closed mouth.
+  const level = Math.min(1, Math.sqrt(sum / avatarBuf.length) * 5);
+  mouth.style.transform = "scaleY(" + (0.15 + level * 1.15).toFixed(3) + ")";
+  avatarRaf = requestAnimationFrame(avatarTick);
+}
+
+function syncAvatar() {
+  const box = $("avatarToggle");
+  if (!box) return;
+  avatarOn = box.checked;
+  $("avatar").hidden = !avatarOn;
+  refreshAvatar();
+  if (avatarOn && playbackActive) startAvatarLoop();
+}
+
+/* Irregular on purpose: a fixed interval reads as a machine. */
+function scheduleBlink() {
+  setTimeout(() => {
+    if (avatarOn) {
+      const el = $("avatar");
+      el.classList.add("blinking");
+      setTimeout(() => el.classList.remove("blinking"), 130);
+    }
+    scheduleBlink();
+  }, 2500 + Math.random() * 4000);
 }
 
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
@@ -101,6 +167,8 @@ async function onMessage(ev) {
       playbackActive = true;
       audioEnded = false;
       playSr = msg.sample_rate || CLIENT_SR;
+      refreshAvatar();
+      startAvatarLoop();
       break;
     case "audio_end":
       audioEnded = true;
@@ -620,7 +688,16 @@ function playChunk(buf) {
   for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
   const src = audioCtx.createBufferSource();
   src.buffer = audioBuf;
-  src.connect(audioCtx.destination);
+  if (avatarOn && !analyser) {
+    // Pass-through node: no gain, no delay, so playback and the echo
+    // reference the browser derives from it are both untouched.
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    avatarBuf = new Uint8Array(analyser.fftSize);
+    analyser.connect(audioCtx.destination);
+  }
+  src.connect(avatarOn && analyser ? analyser : audioCtx.destination);
+  startAvatarLoop();   // a turn already playing when the avatar is switched on
   const now = audioCtx.currentTime;
   if (playNextAt < now) playNextAt = now + 0.05;
   src.start(playNextAt);
@@ -649,6 +726,7 @@ function reportPlaybackEnded() {
   if (!playbackActive) return;
   playbackActive = false;
   audioEnded = false;
+  refreshAvatar();   // the mouth loop stops itself on its next tick
   send({ type: "playback", value: "ended" });
 }
 
@@ -659,6 +737,10 @@ $("pauseBtn").addEventListener("click", () => {
   blocked = false;   // a click is the only thing that can unblock us
   if (streaming) pauseSession();
   else startSession();
+});
+$("avatarToggle").addEventListener("change", () => {
+  savePref(PREF_KEY.avatar, $("avatarToggle").checked ? "1" : "");
+  syncAvatar();
 });
 $("mode").addEventListener("change", (e) => {
   // The server drops the conversation on a mode switch, so the page has to
@@ -820,6 +902,9 @@ if (mediaAvailable()) {
 
 preferredMicId = loadPref(PREF_KEY.mic);
 preferredSpkId = loadPref(PREF_KEY.spk);
+$("avatarToggle").checked = !!loadPref(PREF_KEY.avatar);
+syncAvatar();
+scheduleBlink();
 
 loadModes().then(loadLearners).then(loadUnits).then(loadWords).finally(connect);
 checkSecureContext();
