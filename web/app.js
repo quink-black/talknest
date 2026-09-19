@@ -47,12 +47,15 @@ let preferredMicId = "", preferredSpkId = "";
 let appliedSpkId = "";   // null forces applyOutputDevice to try again
 let sinkWarned = null;   // only warn once per failed target
 
+let avatarHearing = false;   // the child is mid-utterance, not just on-mic
+
 function setStatus(text, busy) {
   $("status").textContent = STATUS_TEXT[text] || text;
   $("statusDot").className = busy ? "dot busy" : "dot idle";
   avatarKind = (text === "thinking" || text === "preparing") ? "thinking"
              : (text === "listening" || text === "hearing") ? "listening"
              : "idle";
+  avatarHearing = text === "hearing";
   refreshAvatar();
 }
 
@@ -64,9 +67,11 @@ function refreshAvatar() {
   if (!el) return;
   el.classList.remove("idle", "listening", "thinking", "speaking");
   el.classList.add(playbackActive ? "speaking" : avatarKind);
+  el.classList.toggle("hearing", avatarHearing && !playbackActive);
   // Nothing else is guaranteed to run once the last chunk drains.
   if (!playbackActive) $("avChar").style.transform = "";
-  yawTo(playbackActive ? 0 : yawTarget);   // face the child while speaking
+  // Face the child while she talks, and while replying.
+  if (playbackActive || avatarHearing) yawTo(0);
 }
 
 function yawFrameIndex(a) {
@@ -99,11 +104,14 @@ function yawTo(target) {
 }
 
 /* Idle behaviour: wander a little, follow the mouse a little, and every
-   so often do a full turn because the back view exists. */
+   so often do a full turn because the back view exists. Nothing here may
+   cut into a turn already in progress. */
+function yawBusy() { return Math.abs(yawTarget - yaw) > 120; }
+
 function scheduleYawWander() {
   setTimeout(() => {
-    if (avatarOn && !REDUCE_MOTION && !playbackActive
-        && performance.now() - mouseStillSince > 2000) {
+    if (avatarOn && !REDUCE_MOTION && !playbackActive && !avatarHearing
+        && !yawBusy() && performance.now() - mouseStillSince > 2000) {
       yawTo((Math.random() * 2 - 1) * 70);
     }
     scheduleYawWander();
@@ -112,8 +120,8 @@ function scheduleYawWander() {
 
 function scheduleYawSpin() {
   setTimeout(() => {
-    if (avatarOn && !REDUCE_MOTION && !playbackActive
-        && performance.now() - mouseStillSince > 4000) {
+    if (avatarOn && !REDUCE_MOTION && !playbackActive && !avatarHearing
+        && !yawBusy() && performance.now() - mouseStillSince > 4000) {
       yawTo(yawTarget + 360 * (Math.random() < 0.5 ? 1 : -1));
     }
     scheduleYawSpin();
@@ -122,8 +130,27 @@ function scheduleYawSpin() {
 
 document.addEventListener("mousemove", (e) => {
   mouseStillSince = performance.now();
-  if (!avatarOn || REDUCE_MOTION || playbackActive) return;
-  yawTo((e.clientX / innerWidth - 0.5) * 50);
+  if (!avatarOn || REDUCE_MOTION || playbackActive || avatarHearing
+      || yawBusy()) return;
+  // Near her she tracks the cursor properly; further away she just leans
+  // with the page.
+  const box = $("avatar").getBoundingClientRect();
+  const dx = e.clientX - (box.left + box.width / 2);
+  if (Math.abs(dx) < 400) yawTo(Math.max(-55, Math.min(55, dx / 7)));
+  else yawTo((e.clientX / innerWidth - 0.5) * 50);
+});
+
+/* A pat on the head: squash and stretch, then a happy full turn. */
+$("avatar").addEventListener("click", () => {
+  if (!avatarOn) return;
+  const el = $("avatar");
+  el.classList.remove("boing");
+  void el.offsetWidth;   // let the class re-add restart the keyframes
+  el.classList.add("boing");
+  if (!REDUCE_MOTION && !playbackActive) yawTo(yawTarget + 360);
+});
+$("avatar").addEventListener("animationend", (e) => {
+  if (e.animationName === "av-boing") e.currentTarget.classList.remove("boing");
 });
 
 function startAvatarLoop() {
