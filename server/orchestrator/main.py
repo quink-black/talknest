@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
-from .asr import ASRClient
+from .asr import ASRClient, DEFAULT_LANGUAGES
 from .config import data_root, load
 from .llm import LLMClient
 from .teaching import curriculum, digest, match, profile, scheduler, state_block
@@ -43,7 +43,8 @@ llm = LLMClient(
     cfg["llm"]["profiles"][cfg["llm"]["active"]].get("api_key", ""),
     cfg["llm"].get("sampling", {}),
 )
-asr = ASRClient(cfg["asr"]["base_url"], cfg["asr"]["model"])
+asr = ASRClient(cfg["asr"]["base_url"], cfg["asr"]["model"],
+                cfg["asr"].get("languages", DEFAULT_LANGUAGES))
 tts = TTSClient(cfg["tts"]["base_url"], cfg["tts"]["model"], cfg["tts"]["voice"],
                 stream=bool(cfg["tts"].get("stream", True)))
 

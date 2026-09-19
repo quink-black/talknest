@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import numpy as np
 import pytest
 
+from orchestrator.asr import in_scope, parse_transcript
 from orchestrator.config import load
 from orchestrator.main import (SENTENCE_MIN_CHARS, THINK_RE, barge_in_due,
                                clean_for_tts, extract_sentences)
@@ -123,6 +124,26 @@ class TestCleanForTts:
     def test_plain_text_untouched(self):
         text = "兔子的英文是 rabbit。跟我读一遍：rabbit！"
         assert clean_for_tts(text) == text
+
+
+class TestTranscriptLanguage:
+    def test_detected_language_and_text(self):
+        raw = "language English<asr_text>My."
+        assert parse_transcript(raw) == ("English", "My.")
+
+    def test_forced_decode_has_no_language(self):
+        assert parse_transcript("My.") == (None, "My.")
+
+    def test_text_without_the_tag_is_untouched(self):
+        assert parse_transcript(" 我要。 ") == (None, "我要。")
+
+    @pytest.mark.parametrize("text", ["My.", "我要。", "I like apples！", "3 apples"])
+    def test_chinese_and_english_in_scope(self, text):
+        assert in_scope(text)
+
+    @pytest.mark.parametrize("text", ["ไม่", "Так.", "こんにちは", "안녕"])
+    def test_other_scripts_out_of_scope(self, text):
+        assert not in_scope(text)
 
 
 class TestTimeStretch:

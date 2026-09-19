@@ -30,6 +30,12 @@ llm:
 asr:
   base_url: http://127.0.0.1:8001/v1
   model: Qwen3-ASR-1.7B
+  # Languages the child can be speaking, ISO 639-1 in the order they are
+  # tried. Qwen3-ASR names the language itself and on a one-syllable word
+  # often names the wrong one -- "my" has come back as Thai -- so a reading
+  # outside this list is taken again with each of them forced, and dropped
+  # if none of the readings is in a script anyone here is speaking.
+  languages: [en, zh]
 
 tts:
   base_url: http://127.0.0.1:8002/v1
