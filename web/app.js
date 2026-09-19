@@ -32,6 +32,10 @@ let replyBubble = null;
    already has -- never from anything the server would have to add. */
 let avatarOn = false, avatarKind = "idle";
 let analyser = null, avatarBuf = null, avatarRaf = 0;
+/* Turntable: yaw is the smoothed angle, yawTarget where she is heading.
+   Four frames cover 0/90/180/270 degrees. */
+let yaw = 0, yawTarget = 0, yawRaf = 0, mouseStillSince = 0;
+const REDUCE_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /* Picked in the UI and remembered across reloads. An empty id means auto:
    the microphone follows the browser default, the speaker follows whatever
@@ -62,7 +66,65 @@ function refreshAvatar() {
   el.classList.add(playbackActive ? "speaking" : avatarKind);
   // Nothing else is guaranteed to run once the last chunk drains.
   if (!playbackActive) $("avChar").style.transform = "";
+  yawTo(playbackActive ? 0 : yawTarget);   // face the child while speaking
 }
+
+function yawFrameIndex(a) {
+  a = ((a % 360) + 360) % 360;
+  return a < 45 || a >= 315 ? 0 : a < 135 ? 1 : a < 225 ? 2 : 3;
+}
+
+function applyYaw() {
+  const frames = document.querySelectorAll("#avChar .av-frame");
+  const on = yawFrameIndex(yaw);
+  frames.forEach((f, i) => f.classList.toggle("on", i === on));
+}
+
+function yawTick() {
+  yawRaf = 0;
+  const d = yawTarget - yaw;
+  if (Math.abs(d) < 0.5) { yaw = yawTarget; applyYaw(); return; }
+  yaw += d * 0.08;
+  applyYaw();
+  yawRaf = requestAnimationFrame(yawTick);
+}
+
+/* Aim at the equivalent of target nearest to where she already is, so a
+   request to face forward never sweeps the long way round. */
+function yawTo(target) {
+  target += Math.round((yaw - target) / 360) * 360;
+  if (target === yawTarget) return;
+  yawTarget = target;
+  if (avatarOn && !yawRaf) yawRaf = requestAnimationFrame(yawTick);
+}
+
+/* Idle behaviour: wander a little, follow the mouse a little, and every
+   so often do a full turn because the back view exists. */
+function scheduleYawWander() {
+  setTimeout(() => {
+    if (avatarOn && !REDUCE_MOTION && !playbackActive
+        && performance.now() - mouseStillSince > 2000) {
+      yawTo((Math.random() * 2 - 1) * 70);
+    }
+    scheduleYawWander();
+  }, 5000 + Math.random() * 3000);
+}
+
+function scheduleYawSpin() {
+  setTimeout(() => {
+    if (avatarOn && !REDUCE_MOTION && !playbackActive
+        && performance.now() - mouseStillSince > 4000) {
+      yawTo(yawTarget + 360 * (Math.random() < 0.5 ? 1 : -1));
+    }
+    scheduleYawSpin();
+  }, 45000 + Math.random() * 40000);
+}
+
+document.addEventListener("mousemove", (e) => {
+  mouseStillSince = performance.now();
+  if (!avatarOn || REDUCE_MOTION || playbackActive) return;
+  yawTo((e.clientX / innerWidth - 0.5) * 50);
+});
 
 function startAvatarLoop() {
   if (!avatarOn || avatarRaf) return;
@@ -894,6 +956,8 @@ preferredMicId = loadPref(PREF_KEY.mic);
 preferredSpkId = loadPref(PREF_KEY.spk);
 $("avatarToggle").checked = !!loadPref(PREF_KEY.avatar);
 syncAvatar();
+scheduleYawWander();
+scheduleYawSpin();
 
 loadModes().then(loadLearners).then(loadUnits).then(loadWords).finally(connect);
 checkSecureContext();

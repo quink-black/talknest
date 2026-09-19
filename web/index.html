@@ -71,8 +71,15 @@
      (static, per state) -> bob (keyframes) -> the image itself (JS, per
      frame while speaking). */
   #avatar { position: relative; }
-  #avatar img { width: 100%; display: block;
-                transform-origin: center bottom; }
+  /* The turn table: frames stack bottom-aligned (feet must stay put while
+     she rotates) and only the active one is visible. */
+  #avChar { position: relative; width: 100%; aspect-ratio: 318/469;
+            transform-origin: center bottom; }
+  .av-frame { position: absolute; left: 50%; bottom: 0; height: 100%;
+              opacity: 0; transform: translateX(-50%);
+              transition: opacity .22s ease; }
+  .av-frame.on { opacity: 1; }
+  .av-frame.av-flip { transform: translateX(-50%) scaleX(-1); }
   .av-pose { transform-origin: center bottom; }
   .av-bob { transform-origin: center bottom;
             animation: av-breathe 3.4s ease-in-out infinite; }
@@ -113,7 +120,14 @@
       <div id="avatar" hidden aria-hidden="true">
         <div class="av-pose">
           <div class="av-bob">
-            <img id="avChar" src="whale.webp" alt="">
+            <div id="avChar">
+              <!-- Order is the rotation direction: face, left profile,
+                   back, then the same profile flipped to face right. -->
+              <img class="av-frame on" src="whale_front.webp" alt="">
+              <img class="av-frame" src="whale_left.webp" alt="">
+              <img class="av-frame" src="whale_back.webp" alt="">
+              <img class="av-frame av-flip" src="whale_right.webp" alt="">
+            </div>
           </div>
         </div>
         <div class="av-thought">…</div>
