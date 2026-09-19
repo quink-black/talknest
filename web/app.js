@@ -68,8 +68,9 @@ function refreshAvatar() {
   el.classList.remove("idle", "listening", "thinking", "speaking");
   el.classList.add(playbackActive ? "speaking" : avatarKind);
   el.classList.toggle("hearing", avatarHearing && !playbackActive);
-  // Nothing else is guaranteed to run once the last chunk drains.
-  if (!playbackActive) $("avChar").style.transform = "";
+  // Nothing else is guaranteed to run once the last chunk drains, so the
+  // transform (bounce, lean) is rederived here rather than cleared.
+  if (!playbackActive) applyYaw();
   // Face the child while she talks, and while replying.
   if (playbackActive || avatarHearing) yawTo(0);
 }
@@ -83,6 +84,15 @@ function applyYaw() {
   const frames = document.querySelectorAll("#avChar .av-frame");
   const on = yawFrameIndex(yaw);
   frames.forEach((f, i) => f.classList.toggle("on", i === on));
+  // Four frames switch only at 45-degree boundaries, so between them she
+  // leans toward the target: without this, tracking the cursor is
+  // invisible until the angle crosses into the next frame.
+  const res = ((yaw - on * 90 + 540) % 360) - 180;
+  const lean = Math.max(-8, Math.min(8, res * 0.18));
+  if (!playbackActive) {
+    $("avChar").style.transform =
+      Math.abs(lean) > 0.2 ? "rotate(" + lean.toFixed(2) + "deg)" : "";
+  }
 }
 
 function yawTick() {
