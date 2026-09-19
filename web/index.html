@@ -6,7 +6,7 @@
 <title>Talknest</title>
 <style>
   :root { font-family: system-ui, sans-serif; }
-  body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; background: #faf9f6; color: #222; }
+  body { max-width: 1240px; margin: 2rem auto; padding: 0 1.5rem; background: #faf9f6; color: #222; }
   header { display: flex; align-items: center; gap: .75rem; }
   h1 { font-size: 1.3rem; margin: 0 auto 0 0; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; }
@@ -15,9 +15,9 @@
   .controls { display: flex; gap: .6rem; align-items: center; margin: 1rem 0; }
   select, button { font-size: 1rem; padding: .5rem .9rem; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
   #startBtn { display: none; flex: 1; padding: 1.2rem; font-size: 1.2rem; background: #e8a13a; color: #fff; border-color: #d8922b; }
-  #transcript { display: flex; flex-direction: column; gap: .5rem; max-height: 45vh; overflow-y: auto;
-                background: #fff; border: 1px solid #e2e0da; border-radius: 10px; padding: 1rem; min-height: 240px; }
-  .bubble { max-width: 85%; padding: .55rem .8rem; border-radius: 12px; white-space: pre-wrap; }
+  #transcript { display: flex; flex-direction: column; gap: .5rem; max-height: 62vh; overflow-y: auto;
+                background: #fff; border: 1px solid #e2e0da; border-radius: 10px; padding: 1rem; min-height: 340px; }
+  .bubble { max-width: min(85%, 34rem); padding: .55rem .8rem; border-radius: 12px; white-space: pre-wrap; }
   .bubble.user { align-self: flex-end; background: #d7e8f7; }
   .bubble.reply { align-self: flex-start; background: #efece4; }
   .bubble.reply.typing::after { content: "…"; animation: pulse 1.2s ease-in-out infinite; }
@@ -41,13 +41,31 @@
   #words th, #words td { text-align: left; }
   #words td:last-child { text-align: right; white-space: nowrap; }
   #words button { font-size: .8rem; padding: .25rem .5rem; margin-left: .25rem; }
-  #stage { display: flex; gap: 1rem; align-items: flex-start; }
-  #avatar { flex: 0 0 150px; }
+  /* Wide screens: conversation on the left, settings in a sidebar. Narrow
+     screens: settings stack above the conversation, as before. */
+  #layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+           grid-template-areas: "main side"; gap: 1.5rem; align-items: start; }
+  #mainCol { grid-area: main; min-width: 0; }
+  aside { grid-area: side; background: #fff; border: 1px solid #e2e0da;
+          border-radius: 10px; padding: .9rem 1rem; }
+  aside .controls { margin: 0 0 .8rem; flex-wrap: wrap; }
+  aside .devices { flex-direction: column; align-items: stretch; gap: .5rem; }
+  aside .dev select { flex: 1; max-width: none; }
+  aside table { width: 100%; }
+  #stage { display: flex; gap: 1.25rem; align-items: flex-start; }
+  #avatar { flex: 0 0 200px; }
   #avatar[hidden] { display: none; }
   #transcript { flex: 1 1 auto; }
+  @media (max-width: 900px) {
+    #layout { grid-template-columns: 1fr;
+              grid-template-areas: "side" "main"; }
+    #avatar { flex-basis: 150px; }
+    #transcript { min-height: 240px; max-height: 45vh; }
+  }
   @media (max-width: 520px) {
+    body { padding: 0 1rem; }
     #stage { flex-direction: column; }
-    #avatar { flex: 0 0 auto; width: 120px; margin: 0 auto; }
+    #avatar { flex: 0 0 auto; width: 130px; margin: 0 auto; }
   }
   /* The character is a bitmap, so every animation is whole-body: pose
      (static, per state) -> bob (keyframes) -> the image itself (JS, per
@@ -87,61 +105,67 @@
 
 <div id="banner"></div>
 
-<div class="controls">
-  <select id="learner"></select>
-  <!-- Fallback options; app.js replaces them from GET /modes. -->
-  <select id="mode">
-    <option value="kid">儿童 (7-10岁)</option>
-    <option value="kid_upper">儿童 (10-12岁)</option>
-    <option value="adult">成人</option>
-  </select>
-  <button id="interruptBtn">停下</button>
-  <button id="pauseBtn">暂停</button>
-  <label class="dev"><input type="checkbox" id="avatarToggle"> 老师形象</label>
-</div>
-
-<details id="parent">
-  <summary>家长区</summary>
-  <div class="prow">
-    <label class="dev">学习单元 <select id="unit"></select></label>
-    <span class="hint" id="unitHint"></span>
-  </div>
-  <div id="words"></div>
-  <p class="hint">选了单元就只教这个单元的新词（想重复练或跳过都可以），不选
-  则按大纲顺序自动往下走。“已会”“重学”是你下的判断，之后自动记录不再改动
-  这个词；“自动”把它交回系统。切换“我是谁”或模式会清空当前对话。</p>
-</details>
-
-<div class="devices">
-  <label class="dev">麦克风 <select id="micSelect"></select></label>
-  <label class="dev">扬声器 <select id="spkSelect"></select></label>
-</div>
-<p class="hint" id="deviceHint"></p>
-
 <button id="startBtn">点我开始对话</button>
 
-<div id="stage">
-  <div id="avatar" hidden aria-hidden="true">
-    <div class="av-pose">
-      <div class="av-bob">
-        <img id="avChar" src="whale.webp" alt="">
+<div id="layout">
+  <main id="mainCol">
+    <div id="stage">
+      <div id="avatar" hidden aria-hidden="true">
+        <div class="av-pose">
+          <div class="av-bob">
+            <img id="avChar" src="whale.webp" alt="">
+          </div>
+        </div>
+        <div class="av-thought">…</div>
       </div>
+
+      <div id="transcript"></div>
     </div>
-    <div class="av-thought">…</div>
-  </div>
+    <p class="hint">麦克风常开：直接对着麦克风说话就行，说完停顿一下会自动接话；
+    对方说话时也可以直接插话打断。蓝牙耳机等设备的插拔会自动暂停并在设备回来后
+    自动继续；手动暂停不会被自动恢复。默认输出跟随麦克风所在的设备（蓝牙耳机
+    插上后会自动切到耳机扬声器），也可以在上面手动指定，选择会记住。麦克风依赖
+    安全上下文，局域网 IP 走纯 HTTP 时需要通过浏览器 flag 或 TLS 放行。</p>
+  </main>
 
-  <div id="transcript"></div>
+  <aside>
+    <div class="controls">
+      <select id="learner"></select>
+      <!-- Fallback options; app.js replaces them from GET /modes. -->
+      <select id="mode">
+        <option value="kid">儿童 (7-10岁)</option>
+        <option value="kid_upper">儿童 (10-12岁)</option>
+        <option value="adult">成人</option>
+      </select>
+      <button id="interruptBtn">停下</button>
+      <button id="pauseBtn">暂停</button>
+      <label class="dev"><input type="checkbox" id="avatarToggle"> 老师形象</label>
+    </div>
+
+    <details id="parent">
+      <summary>家长区</summary>
+      <div class="prow">
+        <label class="dev">学习单元 <select id="unit"></select></label>
+        <span class="hint" id="unitHint"></span>
+      </div>
+      <div id="words"></div>
+      <p class="hint">选了单元就只教这个单元的新词（想重复练或跳过都可以），不选
+      则按大纲顺序自动往下走。“已会”“重学”是你下的判断，之后自动记录不再改动
+      这个词；“自动”把它交回系统。切换“我是谁”或模式会清空当前对话。</p>
+    </details>
+
+    <div class="devices">
+      <label class="dev">麦克风 <select id="micSelect"></select></label>
+      <label class="dev">扬声器 <select id="spkSelect"></select></label>
+    </div>
+    <p class="hint" id="deviceHint"></p>
+
+    <table>
+      <thead><tr><th>ASR done</th><th>Text ready</th><th>First audio</th></tr></thead>
+      <tbody id="marksBody"></tbody>
+    </table>
+  </aside>
 </div>
-<p class="hint">麦克风常开：直接对着麦克风说话就行，说完停顿一下会自动接话；
-对方说话时也可以直接插话打断。蓝牙耳机等设备的插拔会自动暂停并在设备回来后
-自动继续；手动暂停不会被自动恢复。默认输出跟随麦克风所在的设备（蓝牙耳机
-插上后会自动切到耳机扬声器），也可以在上面手动指定，选择会记住。麦克风依赖
-安全上下文，局域网 IP 走纯 HTTP 时需要通过浏览器 flag 或 TLS 放行。</p>
-
-<table>
-  <thead><tr><th>ASR done</th><th>Text ready</th><th>First audio</th></tr></thead>
-  <tbody id="marksBody"></tbody>
-</table>
 
 <script src="app.js"></script>
 </body>
