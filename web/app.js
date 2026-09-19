@@ -61,7 +61,7 @@ function refreshAvatar() {
   el.classList.remove("idle", "listening", "thinking", "speaking");
   el.classList.add(playbackActive ? "speaking" : avatarKind);
   // Nothing else is guaranteed to run once the last chunk drains.
-  if (!playbackActive) $("avMouth").style.transform = "";
+  if (!playbackActive) $("avChar").style.transform = "";
 }
 
 function startAvatarLoop() {
@@ -71,9 +71,9 @@ function startAvatarLoop() {
 
 function avatarTick() {
   avatarRaf = 0;
-  const mouth = $("avMouth");
-  if (!avatarOn || !playbackActive || !analyser || !mouth) {
-    if (mouth) mouth.style.transform = "";
+  const ch = $("avChar");
+  if (!avatarOn || !playbackActive || !analyser || !ch) {
+    if (ch) ch.style.transform = "";
     return;
   }
   analyser.getByteTimeDomainData(avatarBuf);
@@ -82,9 +82,11 @@ function avatarTick() {
     const v = (avatarBuf[i] - 128) / 128;
     sum += v * v;
   }
-  // Speech sits around 0.05-0.25 RMS; the rest maps to a closed mouth.
+  // Speech sits around 0.05-0.25 RMS. A bitmap has no mouth to move, so
+  // she bounces with the volume instead -- the same illusion in coarser
+  // form.
   const level = Math.min(1, Math.sqrt(sum / avatarBuf.length) * 5);
-  mouth.style.transform = "scaleY(" + (0.15 + level * 1.15).toFixed(3) + ")";
+  ch.style.transform = "scaleY(" + (1 + level * 0.05).toFixed(3) + ")";
   avatarRaf = requestAnimationFrame(avatarTick);
 }
 
@@ -95,18 +97,6 @@ function syncAvatar() {
   $("avatar").hidden = !avatarOn;
   refreshAvatar();
   if (avatarOn && playbackActive) startAvatarLoop();
-}
-
-/* Irregular on purpose: a fixed interval reads as a machine. */
-function scheduleBlink() {
-  setTimeout(() => {
-    if (avatarOn) {
-      const el = $("avatar");
-      el.classList.add("blinking");
-      setTimeout(() => el.classList.remove("blinking"), 130);
-    }
-    scheduleBlink();
-  }, 2500 + Math.random() * 4000);
 }
 
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
@@ -904,7 +894,6 @@ preferredMicId = loadPref(PREF_KEY.mic);
 preferredSpkId = loadPref(PREF_KEY.spk);
 $("avatarToggle").checked = !!loadPref(PREF_KEY.avatar);
 syncAvatar();
-scheduleBlink();
 
 loadModes().then(loadLearners).then(loadUnits).then(loadWords).finally(connect);
 checkSecureContext();
