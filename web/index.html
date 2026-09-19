@@ -49,8 +49,8 @@
   aside { grid-area: side; background: #fff; border: 1px solid #e2e0da;
           border-radius: 10px; padding: .9rem 1rem; }
   aside .controls { margin: 0 0 .8rem; flex-wrap: wrap; }
-  aside .devices { flex-direction: column; align-items: stretch; gap: .5rem; }
-  aside .dev { white-space: nowrap; }
+  aside .devices { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: .5rem; }
+  aside .dev { white-space: nowrap; min-width: 0; }
   /* A select sizes itself to its longest option, so without min-width: 0
      the flex item cannot shrink and the label text wraps per character. */
   aside .dev select { flex: 1 1 0; min-width: 0; }
