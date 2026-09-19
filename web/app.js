@@ -138,14 +138,22 @@ function scheduleYawSpin() {
   }, 45000 + Math.random() * 40000);
 }
 
+/* Measured on resize instead of per event: reading a rect during
+   mousemove forces a layout on every move of the pointer. */
+let avatarCenterX = 0;
+function measureAvatar() {
+  const box = $("avatar").getBoundingClientRect();
+  avatarCenterX = box.left + box.width / 2;
+}
+addEventListener("resize", measureAvatar);
+
 document.addEventListener("mousemove", (e) => {
   mouseStillSince = performance.now();
   if (!avatarOn || REDUCE_MOTION || playbackActive || avatarHearing
       || yawBusy()) return;
   // Near her she tracks the cursor properly; further away she just leans
   // with the page.
-  const box = $("avatar").getBoundingClientRect();
-  const dx = e.clientX - (box.left + box.width / 2);
+  const dx = e.clientX - avatarCenterX;
   if (Math.abs(dx) < 400) yawTo(Math.max(-55, Math.min(55, dx / 7)));
   else yawTo((e.clientX / innerWidth - 0.5) * 50);
 });
@@ -195,7 +203,10 @@ function syncAvatar() {
   avatarOn = box.checked;
   $("avatar").hidden = !avatarOn;
   refreshAvatar();
-  if (avatarOn && playbackActive) startAvatarLoop();
+  if (avatarOn) {
+    measureAvatar();   // has a box now that it is visible
+    if (playbackActive) startAvatarLoop();
+  }
 }
 
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
