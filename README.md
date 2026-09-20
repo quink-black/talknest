@@ -1,28 +1,32 @@
 # Talknest
 
-本地部署的英语口语对话练习应用（儿童零基础教学 + 成人自练）。全部推理在
-家庭局域网内完成，语音与文本不出本机；三个模型共驻一张消费级显卡
-（实测 RTX 3060 12G），说完到听见回复约 3 秒（见
-[docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)）。
+Talknest 是一个本地部署的英语口语对话练习应用，面向儿童零基础教学和成人
+自练两种用途。全部推理都在家庭局域网内完成，语音与文本都不离开本机。
+三个模型同时加载在一张消费级显卡上（实测 RTX 3060 12G），从说完到听见
+回复约 3 秒，显存与延迟的实测数据见
+[docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。
 
 ## 特性
 
-- **免按键自由对话**：页面打开即连麦，孩子直接说话，停顿后服务端接话；
-  对方说话时可以直接插话打断。只有浏览器拦截自动播放或拒绝麦克风时才
-  需要点一次按钮。
-- **全链路流式**：ASR 边收边转写、LLM 出满第一句就送 TTS、TTS 边合成边
-  推音频（`tts.stream`），首音频延迟不以整段回复长度计价。
-- **三档模式**：`kid`（儿童教学：中文对话 + 英文教学点）、`kid_upper`
-  （小学高年级：中文对话里夹短英文句）、`adult`（全英文对话），提示词
-  与音色全部集中在 `server/config.yaml`。
-- **音频设备热插拔**：蓝牙耳机断连自动暂停并提示，设备回来自动恢复；
-  麦克风/扬声器可手动指定，输出默认跟随麦克风所属设备。
+- **免按键自由对话**：页面打开后自动连接麦克风，孩子直接说话，检测到
+  停顿之后服务端就接话。对方说话时孩子可以直接插话打断。只有当浏览器
+  拦截自动播放或者拒绝麦克风权限时，才需要点击一次按钮。
+- **全链路流式**：ASR 边接收边转写，LLM 输出满第一句就把文本交给 TTS，
+  TTS 边合成边推送音频（`tts.stream`）。因此首音频延迟不按整段回复的
+  长度计价。
+- **三档模式**：`kid`（儿童教学：中文对话加英文教学点）、`kid_upper`
+  （小学高年级：中文对话里夹杂短英文句）、`adult`（全英文对话）。三档
+  模式的提示词与音色全部集中在 `server/config.yaml`。
+- **音频设备热插拔**：蓝牙耳机断连时页面自动暂停并提示缺少哪个设备，
+  设备回来之后自动恢复会话；麦克风与扬声器可以手动指定，扬声器默认
+  跟随麦克风所属的设备。
 
 ## 架构
 
-浏览器 Web UI（麦克风常驻采集，AEC）→ Orchestrator（流式 VAD 切分轮次/
-会话/模式/打断，FastAPI + WebSocket，:8890）→ 三个独立推理服务（ASR、
-LLM、TTS），全部流式、可逐个替换；VAD 内嵌在 orchestrator 里：
+链路从浏览器 Web UI 开始（麦克风常驻采集，带 AEC），进入 orchestrator
+（流式 VAD 切分轮次、会话、模式与打断，FastAPI + WebSocket，:8890），
+再由三个独立的推理服务（ASR、LLM、TTS）完成推理。三个推理服务全部支持
+流式，并且可以逐个替换；VAD 内嵌在 orchestrator 进程内：
 
 | 环节 | 模型 | 运行时 | 端口 |
 |---|---|---|---|
@@ -31,31 +35,32 @@ LLM、TTS），全部流式、可逐个替换；VAD 内嵌在 orchestrator 里�
 | TTS | Qwen3-TTS-12Hz-0.6B-CustomVoice | qwen-tts 包（专用 `venv-tts/`）+ OpenAI 兼容 sidecar | 8002 |
 | VAD | Silero VAD (ONNX) | orchestrator 内嵌（CPU，流式） | — |
 
-轮次切分与打断的机制、调参见 [docs/vad-tuning.md](docs/vad-tuning.md)。
+轮次切分与打断的机制和调参方法见 [docs/vad-tuning.md](docs/vad-tuning.md)。
 
-LLM 可切换到 Qwen3.8-27B-NVFP4（vLLM）：改 `server/config.yaml` 的
-`llm.active` 一行，先停 9B 再起 27B（显存互斥）。27B 需要远大于 12G
-的显存或统一内存。
+LLM 可以切换到 Qwen3.8-27B-NVFP4（vLLM）：修改 `server/config.yaml` 的
+`llm.active` 一行即可。切换时要先停止 9B 再启动 27B，因为两者的显存
+互斥。27B 需要远大于 12G 的显存，或者需要统一内存。
 
 ## 硬件与软件要求
 
-- **NVIDIA GPU**：三个模型共驻同一张卡，12G 是实测下限；显存预算与
-  各参数的取舍记录在 [docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。
-- **Python 3.12**，三个 venv：`venv/`（orchestrator，装
-  `server/requirements.txt`）、`venv-tts/`（qwen-tts 与 transformers
-  独用一套，避免依赖降级）、以及一个装 vLLM 或 `qwen-asr-serve` 的
-  venv（`ASR_VENV` 指定）。
-- **llama.cpp**：自建，带 `-DGGML_CUDA=ON`，可执行文件目录由
-  `TN9B_BIN_DIR` 指定。
-- **浏览器**：桌面 Chrome/Edge。扬声器跟随麦克风切换依赖
-  `AudioContext.setSinkId()`（Chrome 系独有），其他浏览器扬声器下拉
-  禁用、跟随系统输出。
+- **NVIDIA GPU**：三个模型加载在同一张 GPU 上，12G 是实测下限。显存
+  预算与各参数的取舍记录在
+  [docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。
+- **Python 3.12 与三个 venv**：`venv/` 运行 orchestrator，安装
+  `server/requirements.txt`；`venv-tts/` 由 qwen-tts 与 transformers
+  独用一套依赖，目的是避免依赖降级；还有一个安装 vLLM 或
+  `qwen-asr-serve` 的 venv，路径由 `ASR_VENV` 指定。
+- **llama.cpp**：需要自行构建，并带上 `-DGGML_CUDA=ON`。可执行文件目录
+  由 `TN9B_BIN_DIR` 指定。
+- **浏览器**：桌面 Chrome 或 Edge。扬声器跟随麦克风切换依赖
+  `AudioContext.setSinkId()`，该接口只有 Chrome 系浏览器提供。在其他
+  浏览器中扬声器下拉框禁用，扬声器跟随系统输出。
 
 ## 模型权重
 
-权重不入库。默认放在仓库同级的 `model/` 目录（`TALKNEST_MODEL_ROOT`
-可覆盖），各服务另有单独覆盖变量（`TN9B_MODEL_DIR`、`ASR_MODEL`、
-`QWEN_TTS_DIR`）：
+模型权重不随仓库分发。权重默认放在仓库同级的 `model/` 目录，根目录可以
+用 `TALKNEST_MODEL_ROOT` 覆盖；各服务另有单独的覆盖变量
+（`TN9B_MODEL_DIR`、`ASR_MODEL`、`QWEN_TTS_DIR`）：
 
 ```
 model/
@@ -68,39 +73,41 @@ model/
 
 ## 教学词库
 
-大纲用到的中文释义和拼音不入库，需要导一次（下载约 4 MB，只下一次）：
+教学大纲用到的中文释义与拼音不随仓库分发，需要导入一次（下载约 4 MB，
+只需执行一次）：
 
 ```bash
 ./venv/bin/python scripts/import_curriculum.py
 ```
 
-释义写在 `server/curriculum/glosses.yaml`（入库，可以直接改），脚本从
-CC-CEDICT 补拼音，生成 `data/curriculum/lexicon.jsonl`。不导也能跑，只是
-大纲里的词不做校验 —— 拼错不会被发现。
+释义写在 `server/curriculum/glosses.yaml`（该文件入库，可以直接修改），
+导入脚本从 CC-CEDICT 补充拼音，并生成 `data/curriculum/lexicon.jsonl`。
+跳过这一步也能运行，但大纲里的词不做拼写校验，因此拼错不会被发现。
 
 ## 本机配置（local.env）
 
-venv 路径、构建目录、权重根目录、显存分配这些只跟机器有关的东西不进
-版本库：复制模板填一次，之后所有脚本都不用再带参数。
+venv 路径、构建目录、权重根目录、显存分配这类值只与当前机器有关，因此
+不进入版本库。复制模板填写一次之后，后续所有脚本都不需要再带参数：
 
 ```bash
 cp local.env.example local.env   # local.env 已被 .gitignore 忽略
 ```
 
-`scripts/local_env.sh` 负责加载它，启动脚本、停止脚本、
-`scripts/run_server.sh` 和 `scripts/llama_qwen35_9b.sh` 都会 source，
-所以里面的值对跑在 tmux 或 systemd 里的服务同样生效。缺了某个值时脚本
-会直接报错并提示该填哪一项，而不是猜一个路径。
+`scripts/local_env.sh` 负责加载 local.env。启动脚本、停止脚本、
+`scripts/run_server.sh` 与 `scripts/llama_qwen35_9b.sh` 都会 source 该
+文件，因此其中的值对运行在 tmux 或 systemd 里的服务同样生效。当某一项
+缺失时，脚本会直接报错并提示需要填写哪一项，而不会猜测路径。
 
-权重根目录 `TALKNEST_MODEL_ROOT` 是唯一的例外：不填时回退到与仓库同级
-的 `model/` 目录（`server/orchestrator/config.py` 的 `model_root()` 同
-规则）。
+权重根目录 `TALKNEST_MODEL_ROOT` 是唯一有默认值的变量：未填写时回退到
+与仓库同级的 `model/` 目录，`server/orchestrator/config.py` 的
+`model_root()` 使用同一规则。
 
 ## 运行
 
-四个服务，**启动顺序有意义**：ASR 与 TTS 先起（各自圈定显存），LLM 最后
-（llama.cpp `-fit on` 按剩余显存自动挑卸载层数；想固定层数用 `TN9B_NGL`）。
-每个服务脚本只负责前台运行，不管监督方式，所以三种方式任选：
+共四个服务，启动顺序有意义：先启动 ASR 与 TTS，因为两者各自预留显存；
+LLM 最后启动，llama.cpp 的 `-fit on` 会按剩余显存自动选择卸载层数（想
+固定层数就用 `TN9B_NGL`）。每个服务脚本只负责在前台运行，不管理监督
+方式，因此三种方式任选：
 
 ```bash
 # 单独前台跑
@@ -110,7 +117,7 @@ server/services/start_llm_llamacpp_9b.sh   # LLM   :9999
 scripts/start_web.sh                       # 界面  :8890
 ```
 
-开发观察用 tmux（一个 session、每服务一个 window、输出 tee 到
+开发观察使用 tmux（一个 session、每服务一个 window、输出 tee 到
 `logs/<service>.current.log`）：
 
 ```bash
@@ -119,7 +126,7 @@ scripts/tmux_start.sh asr tts         # 只重启某几个
 scripts/tmux_stop.sh                  # 停窗口并释放端口
 ```
 
-无人值守常驻用 systemd 用户单元（崩溃自动拉起、可开机自启）：
+无人值守常驻使用 systemd 用户单元（崩溃后自动拉起、可开机自启）：
 
 ```bash
 scripts/systemd/install.sh             # 渲染单元到 ~/.config/systemd/user/
@@ -129,18 +136,21 @@ journalctl --user -u talknest-asr -f   # 日志走 journald
 scripts/systemd/install.sh --enable    # 开机自启（含 enable-linger）
 ```
 
-两种模式可随时互换（都会先停掉另一模式的实例），但不要同时跑。注意：
+两种模式可以随时互换，因为两者都会先停掉另一模式的实例，但不要同时运行。
+注意：
 
-- 单元依赖：LLM `Requires=` ASR+TTS，ASR/TTS 没就绪时 LLM 不启动（护住
-  `-fit` 的显存顺序）；显式停 ASR/TTS 会连带停 LLM，但不会停 orchestrator。
-- 停止单个服务用对应的 `stop_*.sh`（`server/services/stop_{asr,tts,llm}.sh`、
-  `scripts/stop_web.sh`），按端口回收，不管服务在哪里启动。
-- 改了 TLS 配置、端口或移动了 checkout 后要重跑 `install.sh`（web 健康
-  检查的 URL 是渲染时定死的）。
+- 单元依赖：LLM 单元用 `Requires=` 依赖 ASR 与 TTS，因此 ASR 或 TTS
+  未就绪时 LLM 不会启动，这条依赖保护了 `-fit` 所要求的显存分配顺序。
+  显式停止 ASR 或 TTS 会连带停止 LLM，但不会停止 orchestrator。
+- 停止单个服务时使用对应的 `stop_*.sh`
+  （`server/services/stop_{asr,tts,llm}.sh`、`scripts/stop_web.sh`），
+  脚本按端口回收进程，与该服务在哪里启动无关。
+- 修改 TLS 配置、修改端口或移动 checkout 之后要重新运行 `install.sh`，
+  因为 web 健康检查的 URL 在渲染单元时已经固定。
 
 ### 浏览器访问（安全上下文）
 
-麦克风要求安全上下文：局域网 IP 走纯 HTTP 时浏览器不暴露
+麦克风要求安全上下文：当局域网 IP 通过纯 HTTP 访问时，浏览器不会暴露
 `navigator.mediaDevices`。推荐自签 TLS：
 
 ```bash
@@ -150,30 +160,31 @@ scripts/gen_dev_cert.sh                    # 生成自签证书（SAN 覆盖本�
 # 自签警告。
 ```
 
-临时替代：`chrome://flags/#unsafely-treat-insecure-origin-as-secure` 加入
-`http://<host>:8890` 后重启浏览器。
+临时替代方案：在 `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+中加入 `http://<host>:8890`，然后重启浏览器。
 
-想让孩子连接受自签警告这一次点击都省掉，给 Chrome 加
-`--autoplay-policy=no-user-gesture-required`（并在该 origin 上永久允许
-麦克风），页面加载后就会自己开麦。
+如果想让孩子把接受自签警告这一次点击也省掉，给 Chrome 加上
+`--autoplay-policy=no-user-gesture-required` 参数，并在该 origin 上永久
+允许麦克风，页面加载之后就会自己开麦。
 
 ## 模式
 
-- `kid`：零基础（约 7-10 岁）——对话用中文，英文只出现在教学点
-  （“兔子的英文是 rabbit。”），目标是培养兴趣和日常表达。
-- `kid_upper`：小学高年级（约 10-12 岁）——中文对话里自由夹短英文句。
-- `adult`：全英文对话，正常语速；用户明显卡住时才用中文。
+- `kid`：零基础（约 7-10 岁）。对话用中文，英文只出现在教学点
+  （“兔子的英文是 rabbit。”），目标是培养兴趣和日常表达能力。
+- `kid_upper`：小学高年级（约 10-12 岁）。在中文对话里自由夹杂短英文句。
+- `adult`：全英文对话，用正常语速；只有当用户明显卡住时才用中文。
 
-模式的行为（系统提示词）与音色、语言、语速都写在 `server/config.yaml`
-的 `modes` 段，未覆盖的项取 `tts` 段的全局值——换音色、换语言只改这
-一个文件。Qwen3-TTS 0.6B 无速率参数，可选的放慢由 orchestrator 端
-WSOLA 变速实现（`server/orchestrator/tts.py`），在语音上有可闻伪影，
-默认不启用。
+三种模式的行为（系统提示词）与音色、语言、语速都写在
+`server/config.yaml` 的 `modes` 段，未被覆盖的项取 `tts` 段的全局值，
+因此换音色、换语言只改这一个文件。Qwen3-TTS 0.6B 没有速率参数，可选的
+放慢由 orchestrator 端 WSOLA 变速实现（`server/orchestrator/tts.py`），
+而变速会在语音上产生可闻的伪影，因此默认不启用。
 
 ## CLI 客户端（headless）
 
-没有浏览器也能用：`client/` 下有一个终端客户端，面向"任何带音频输入输出
-的 Linux 机器，从另一台设备 SSH 进来用"的形态（树莓派是目标形态之一）。
+没有浏览器时可以使用 `client/` 下的终端客户端。它的目标形态是“任何带
+音频输入输出的 Linux 机器，从另一台设备 SSH 进来使用”，树莓派是目标
+形态之一。
 
 ```bash
 pip install -r client/requirements.txt   # 需要 libportaudio2；Python >= 3.10
@@ -182,25 +193,27 @@ scripts/talknest-cli --list-devices      # 看设备
 scripts/talknest-cli --input hw:2,0 --output hw:2,0   # 手动指定设备
 ```
 
-回声取消按设备类型自动选择（`--aec auto`，默认）：蓝牙 HFP 设备自动降级
-为半双工（HFP 时延抖动实测会让任何参考对齐型 AEC 失效），其余设备用
-进程内 DTLN-AEC 神经网络（非 WebRTC 路线，TFLite，模型见
-[client/docs/bench/cli-aec.md](docs/bench/cli-aec.md)）；`--aec none`
-强制半双工。麦克风/扬声器来自文件（`--input-file`/`--output-file`）时
-不需要声卡，可做离线回归。实测记录见
+回声取消方式按设备类型自动选择（`--aec auto`，默认值）。当设备是蓝牙
+HFP 设备时，客户端降级为半双工，因为 HFP 的时延抖动实测会让任何参考
+对齐型 AEC 失效；其余设备使用进程内的 DTLN-AEC 神经网络（非 WebRTC
+路线，TFLite 模型，见
+[docs/bench/cli-aec.md](docs/bench/cli-aec.md)）。`--aec none` 强制
+半双工。当麦克风或扬声器来自文件（`--input-file`/`--output-file`）时，
+客户端不需要声卡，因此可以用于离线回归。实测记录见
 [docs/bench/cli-aec.md](docs/bench/cli-aec.md)。
 
 ## 音频设备
 
-页面上的“麦克风 / 扬声器”下拉显示当前实际在用的设备，也可以直接指定，
-选择记在 localStorage。默认“自动”：麦克风跟浏览器默认，扬声器跟麦克风
-所属的设备（同一个 `groupId`，即蓝牙耳机的另一半），所以蓝牙耳机重连后
-声音会一起回到耳机，不会留在 HDMI 外放上。
+页面上的“麦克风 / 扬声器”下拉框显示当前实际在用的设备，也可以直接指定
+设备，选择结果记录在 localStorage。默认值是“自动”：麦克风跟随浏览器
+默认设备，扬声器跟随麦克风所属的设备（同一个 `groupId`，也就是蓝牙耳机
+的另一半），因此蓝牙耳机重连之后声音会一起回到耳机，而不会留在 HDMI
+外放上。
 
-麦克风或扬声器离线（蓝牙断连、track 结束、设备从列表消失）时页面自动
-暂停并提示缺了什么；设备回来后自动恢复会话。播放切输出走
-`AudioContext.setSinkId()`，播放和采集始终共用同一个 AudioContext，
-AEC 的参考信号不受影响。
+当麦克风或扬声器离线时（蓝牙断连、track 结束、设备从列表消失），页面会
+自动暂停并提示缺少哪个设备；设备回来之后，页面会自动恢复会话。播放切换
+输出设备走 `AudioContext.setSinkId()`，播放和采集始终共用同一个
+AudioContext，因此 AEC 的参考信号不受影响。
 
 ## 目录
 
@@ -208,7 +221,7 @@ AEC 的参考信号不受影响。
 server/orchestrator/   会话编排与语音管线（FastAPI + WebSocket）
 server/services/       各推理服务启动/停止脚本与 TTS sidecar
 web/                   纯 JS 前端（getUserMedia 常驻采集 + 队列播放）
-client/                终端客户端（headless，见上文"CLI 客户端"）
+client/                终端客户端（headless，见上文“CLI 客户端”）
 scripts/               llama.cpp 启动器、tmux/systemd 编排、基准脚本
 tests/                 单元测试 + 服务探针 + 全链路冒烟
 docs/                  设计文档与实测报告
@@ -227,22 +240,23 @@ local.env              本机配置（不入库，见 local.env.example）
 ./venv/bin/python scripts/eval_teaching.py # 教学计划：跟不跟计划、计划块带来多少延迟
 ```
 
-`eval_teaching.py` 需要 LLM 服务在跑，用脚本化的“假孩子”跑若干轮，给出
-四组数字：是否教了计划里的词、有没有把已会的词当新词教、回复里英文占比的
-中位数、以及加计划块前后首 token 延迟的差值。学习者状态写进临时目录，
-不会碰到真实档案。加 `--write docs/bench/teaching-eval.md` 存成报告。
+`eval_teaching.py` 需要 LLM 服务在运行。脚本用一个模拟的孩子跑若干轮
+对话，输出四组数字：是否教了计划里的词、有没有把已会的词当成新词教、
+回复中英文占比的中位数，以及加计划块前后首 token 延迟的差值。学习者
+状态写入临时目录，因此不会修改真实档案。加上
+`--write docs/bench/teaching-eval.md` 可以把结果存成报告。
 
 ## 提交前密钥扫描
 
-仓库带 gitleaks pre-commit hook（`scripts/hooks/pre-commit`），提交暂存
-内容含密钥特征时直接拒绝。一次性启用：
+仓库带有 gitleaks pre-commit hook（`scripts/hooks/pre-commit`），当暂存
+内容包含密钥特征时，该 hook 会直接拒绝提交。一次性启用：
 
 ```bash
 git config core.hooksPath scripts/hooks
 gitleaks version || echo "先安装: https://github.com/gitleaks/gitleaks/releases"
 ```
 
-未安装 gitleaks 时 hook 只警告不拦截。
+未安装 gitleaks 时，该 hook 只警告而不拦截。
 
 ## 文档
 
