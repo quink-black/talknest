@@ -9,3 +9,8 @@ local.env
 certs/
 # Learner progress and the imported lexicon; never leave the machine
 data/
+# The iOS shell's Xcode project and build output are generated from
+# ios/project.yml by xcodegen
+ios/Talknest.xcodeproj/
+ios/build/
+.DS_Store

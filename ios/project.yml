@@ -1,0 +1,71 @@
+name: Talknest
+options:
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_PREVIEWS: YES
+    # Device only. actool compiles a variant for every supported platform,
+    # and it needs a simulator runtime to do the iphonesimulator one; none
+    # is installed for the current SDK.
+    SUPPORTED_PLATFORMS: iphoneos
+schemes:
+  Talknest:
+    build:
+      targets:
+        Talknest: all
+    run:
+      targets:
+        Talknest: [run]
+    test:
+      targets: []
+    profile:
+      targets:
+        Talknest: [profile]
+    analyze:
+      targets:
+        Talknest: [analyze]
+    archive:
+      targets:
+        Talknest: [archive]
+targets:
+  Talknest:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_NAME: Talknest
+        PRODUCT_BUNDLE_IDENTIFIER: com.talknest.ios
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Talknest
+        LSRequiresIPhoneOS: true
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortraitUpsideDown
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSMicrophoneUsageDescription: Talknest 需要麦克风来听孩子说话
+        NSLocalNetworkUsageDescription: Talknest 需要访问局域网里运行对话服务的电脑
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoadsInWebContent: true

@@ -167,6 +167,13 @@ scripts/gen_dev_cert.sh                    # 生成自签证书（SAN 覆盖本�
 `--autoplay-policy=no-user-gesture-required` 参数，并在该 origin 上永久
 允许麦克风，页面加载之后就会自己开麦。
 
+### iPad app
+
+`ios/` 是一个只做壳的原生 app：启动即全屏加载 `https://<host>:8890`，
+自己处理麦克风授权、音频自动播放和自签证书，地址在 app 内填写。构建与
+安装见 [ios/README.md](ios/README.md)。同样需要上面那一步自签 TLS：
+iPad 上的 WKWebView 只在安全上下文里暴露麦克风。
+
 ## 模式
 
 - `kid`：零基础（约 7-10 岁）。对话用中文，英文只出现在教学点
