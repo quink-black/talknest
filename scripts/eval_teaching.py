@@ -53,6 +53,16 @@ MISHEARINGS = [
     ("热的", "red", "hot", "红色"),
     ("海", "hi", "sea", "你好"),
 ]
+# Things children actually said in logged sessions that no unit lists. The
+# tutor is expected to take them up rather than steer away from them.
+TOPIC_TURNS = [
+    "今天是中秋节", "这是我的魔法笔", "我想养一只恐龙", "我今天踢足球了",
+    "我家有一只小狗", "我最喜欢吃火锅",
+]
+# Phrases a tutor uses when it turns a topic down.
+REFUSALS = re.compile(r"还没学过|没学过|没有关系|没关系哦|不聊|先不聊|和.{0,6}英语.{0,6}没")
+INVITATION = re.compile(r"跟我(?:读|说)")
+QUESTION = re.compile(r"[?？]\s*$")
 ENGLISH = re.compile(r"[a-zA-Z]")
 CJK = re.compile(r"[一-鿿]")
 FRAMES = [re.compile(r"英文是\s*([a-z]+)"), re.compile(r"([a-z]+)\s*的英文是")]
@@ -87,11 +97,10 @@ async def run(sess, utterances, with_plan: bool) -> dict:
     """Talk through the script and measure what came back."""
     asked, off_plan, leaked, shares, first, total = 0, [], 0, [], [], []
     for text in utterances:
-        plan = orch.scheduler.plan(sess.store, sess.units, orch.BLOCK_CAPS,
-                                   sess.portrait) if with_plan else orch.state_block.Plan()
-        targets = list(plan.new) + list(plan.review)
         messages = (orch.build_messages(sess, text) if with_plan
                     else plain_messages(sess, text))
+        plan = sess.plan if with_plan else orch.state_block.Plan()
+        targets = list(plan.new) + list(plan.review)
         start = asyncio.get_event_loop().time()
         reply, ttft = "", None
         async for delta in orch.llm.stream_chat(messages):
@@ -144,6 +153,45 @@ async def run_mishearings(sess) -> dict:
             trapped.append(f"{heard} -> {trap}")
         replies.append((heard, word, reply.strip()))
     return {"hit": hit, "trapped": trapped, "replies": replies}
+
+
+async def run_topics(sess, plan_turn: bool) -> dict:
+    """Topics the child brings up that the curriculum does not cover.
+
+    Each turn starts from the same short opening exchange, so the tutor is
+    mid-conversation rather than greeting. Measured: whether it took the
+    topic up instead of refusing it, whether it taught exactly one English
+    point, whether it ended by handing the turn back (a question or an
+    invitation to repeat), and whether that point was recorded as a topic word.
+    """
+    engaged, one_point, asked_back, kept, woven, replies = 0, 0, 0, 0, 0, []
+    opening = [{"role": "user", "content": "你好"},
+               {"role": "assistant", "content": "你好呀，今天想聊点什么？"}]
+    for text in TOPIC_TURNS:
+        sess.history[:] = list(opening)
+        sess.turn_count = orch.scheduler.PLAN_EVERY - 1 if plan_turn else 1
+        messages = orch.build_messages(sess, text)
+        targets = list(sess.plan.new) + list(sess.plan.review)
+        reply = ""
+        async for delta in orch.llm.stream_chat(messages):
+            reply += delta
+        reply = orch.THINK_RE.sub("", reply).strip()
+        if not REFUSALS.search(reply):
+            engaged += 1
+        if len(orch.match.teaching_points(reply)) == 1:
+            one_point += 1
+        if QUESTION.search(reply) or INVITATION.search(reply[-30:]):
+            asked_back += 1
+        if targets and any(w in reply.lower() for w in targets):
+            woven += 1
+        before = set(sess.store.topic_words())
+        orch.record_turn(sess, text, [reply], interrupted=False)
+        if set(sess.store.topic_words()) - before:
+            kept += 1
+        replies.append((text, reply))
+    return {"engaged": engaged, "one_point": one_point,
+            "asked_back": asked_back, "kept": kept, "woven": woven,
+            "replies": replies}
 
 
 def report(cfg: dict, rounds: int, planned: dict, baseline: dict,
@@ -210,6 +258,8 @@ async def main_async(args) -> int:
     try:
         planned = await run(planned_session, utterances, with_plan=True)
         mis = await run_mishearings(planned_session)
+        topics = await run_topics(planned_session, plan_turn=False)
+        woven = await run_topics(planned_session, plan_turn=True)
         baseline_session = orch.Session()
         baseline_session.open_learner("eval-baseline")
         baseline = await run(baseline_session, utterances, with_plan=False)
@@ -232,6 +282,16 @@ async def main_async(args) -> int:
           + (": " + ", ".join(mis["trapped"]) if mis["trapped"] else ""))
     for heard, word, reply in mis["replies"]:
         print(f"  [{heard} / {word}] {' '.join(reply.split())[:110]}")
+
+    n = len(TOPIC_TURNS)
+    for label, result in (("topic turn", topics), ("plan turn", woven)):
+        print(f"{label}: taken up, not refused:   {result['engaged']}/{n}")
+        print(f"{label}: exactly one point:       {result['one_point']}/{n}")
+        print(f"{label}: turn handed back:        {result['asked_back']}/{n}")
+        print(f"{label}: kept as a topic word:    {result['kept']}/{n}")
+        print(f"{label}: used a plan word:        {result['woven']}/{n}")
+        for text, reply in result["replies"]:
+            print(f"  [{text}] {' '.join(reply.split())[:150]}")
 
     text = report(load(), len(utterances), planned, baseline, mis)
     if args.write:

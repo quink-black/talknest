@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,7 +19,8 @@ from orchestrator.config import load
 from orchestrator.teaching import (curriculum, digest, match, profile,
                                    scheduler, state_block)
 from orchestrator.teaching.curriculum import CurriculumError, Unit
-from orchestrator.teaching.store import Store
+from orchestrator.teaching.store import (MASTERY_BOX, Store, due_after,
+                                         local_day)
 
 
 class FakeLLM:
@@ -31,6 +33,11 @@ class FakeLLM:
     async def stream_chat(self, messages, cancel=None, max_tokens=None):
         self.prompts.append(messages)
         yield self.reply
+
+def day(n: int, hour: int = 12) -> str:
+    """A timestamp on day n of a fixed month, the same hour every day."""
+    return f"2026-10-{n:02d}T{hour:02d}:00:00+00:00"
+
 
 UNITS = [
     Unit(id="colors", title="颜色", goal="", words=("red", "blue"),
@@ -146,33 +153,58 @@ class TestStore:
     def test_sync_seeds_untaught_words(self, store):
         assert store.boxes() == {"red": 0, "blue": 0, "cat": 0}
 
-    def test_first_touch_introduces(self, store):
-        store.touch(["red"], 1, practiced=False)
-        assert store.boxes()["red"] == 1
+    def test_a_mention_does_not_introduce(self, store):
+        store.expose(["red"], 1)
+        assert store.boxes()["red"] == 0
+        assert store.get("red")["last_seen_at"] is not None
 
-    def test_same_session_does_not_promote(self, store):
-        store.touch(["red"], 1, False)
-        store.touch(["red"], 1, False)
+    def test_a_planned_word_is_introduced_when_taught(self, store):
+        store.expose(["red", "blue"], 1, introduce=["red"], at=day(1))
         assert store.boxes()["red"] == 1
+        assert store.boxes()["blue"] == 0
+        assert store.get("red")["due_at"] == due_after(1, day(1))
 
-    def test_new_session_promotes(self, store):
-        store.touch(["red"], 1, False)
-        store.touch(["red"], 2, False)
+    def test_the_child_saying_a_word_introduces_it(self, store):
+        store.practice(["red"], 1, at=day(1))
+        assert store.boxes()["red"] == 1
+        assert store.get("red")["practices"] == 1
+
+    def test_practice_the_same_day_does_not_promote(self, store):
+        store.practice(["red"], 1, at=day(1, 11))
+        store.practice(["red"], 1, at=day(1, 12))
+        store.practice(["red"], 2, at=day(1, 13))
+        assert store.boxes()["red"] == 1
+        assert store.get("red")["practices"] == 3
+
+    def test_promotion_waits_for_the_due_day(self, store):
+        store.practice(["red"], 1, at=day(1))       # box 1, due day 2
+        store.practice(["red"], 2, at=day(2))       # due: box 2, due day 4
         assert store.boxes()["red"] == 2
-
-    def test_repeated_production_accelerates(self, store):
-        store.touch(["red"], 1, True)
-        store.touch(["red"], 2, True)
+        store.practice(["red"], 3, at=day(3))       # not due yet
+        assert store.boxes()["red"] == 2
+        store.practice(["red"], 4, at=day(4))       # due: box 3
         assert store.boxes()["red"] == 3
 
+    def test_mastery_takes_production_on_several_days(self, store):
+        for n, d in enumerate([1, 2, 4, 8], start=1):
+            assert store.boxes()["red"] < MASTERY_BOX
+            store.practice(["red"], n, at=day(d))
+        assert store.boxes()["red"] == MASTERY_BOX
+
+    def test_a_mention_never_promotes(self, store):
+        store.practice(["red"], 1, at=day(1))
+        for d in (2, 3, 9):
+            store.expose(["red"], 2, introduce=["red"], at=day(d))
+        assert store.boxes()["red"] == 1
+
     def test_unknown_word_is_ignored(self, store):
-        store.touch(["ghost"], 1, False)
+        store.practice(["ghost"], 1)
         assert "ghost" not in store.boxes()
 
-    def test_parent_pinned_box_survives_touches(self, store):
+    def test_parent_pinned_box_survives_practice(self, store):
         store.set_box("red", 6)
-        store.touch(["red"], 1, True)
-        store.touch(["red"], 2, True)
+        store.practice(["red"], 1, at=day(1))
+        store.practice(["red"], 2, at=day(9))
         assert store.boxes()["red"] == 6
         assert store.get("red")["practices"] == 2
 
@@ -183,13 +215,21 @@ class TestStore:
 
     def test_demote_stale(self, store):
         store.set_box("red", 3, manual=False)
-        store.db.execute("UPDATE words SET last_seen_at = '2020-01-01T00:00:00+00:00'")
+        store.db.execute("UPDATE words SET due_at = '2020-01-01'")
         assert store.demote_stale() == 1
         assert store.boxes()["red"] == 2
+        assert store.get("red")["due_at"] <= local_day().isoformat()
+        assert store.demote_stale() == 0       # one step per lapse
+
+    def test_demote_leaves_the_slightly_overdue_alone(self, store):
+        store.set_box("red", 3, manual=False)
+        store.db.execute("UPDATE words SET due_at = ?",
+                         ((local_day() - timedelta(days=2)).isoformat(),))
+        assert store.demote_stale() == 0
 
     def test_demote_skips_pinned_words(self, store):
         store.set_box("red", 3)
-        store.db.execute("UPDATE words SET last_seen_at = '2020-01-01T00:00:00+00:00'")
+        store.db.execute("UPDATE words SET due_at = '2020-01-01'")
         assert store.demote_stale() == 0
 
     def test_settings_roundtrip(self, store):
@@ -199,25 +239,88 @@ class TestStore:
         store.set_setting("current_unit", "food")
         assert store.get_setting("current_unit") == "food"
 
-    def test_review_skips_untaught_and_mastered(self, store):
-        assert store.review_due(10) == []          # nothing introduced yet
-        store.touch(["red"], 1, False)             # box 1
-        assert store.review_due(10) == ["red"]
-        store.set_box("red", 4, manual=False)      # mastered
-        assert store.review_due(10) == []
+    def test_review_lists_only_words_that_are_due(self, store):
+        assert store.review_due(10, day(1)) == []      # nothing introduced yet
+        store.practice(["red"], 1, at=day(1))
+        assert store.review_due(10, day(1)) == []      # due tomorrow
+        assert store.review_due(10, day(2)) == ["red"]
 
-    def test_review_takes_the_weakest_first(self, store):
-        store.set_box("red", 3, manual=False)
-        store.set_box("blue", 1, manual=False)
+    def test_a_mention_sends_a_word_to_the_back_of_the_queue(self, store):
+        store.set_box("red", 2, manual=False)
+        store.set_box("blue", 2, manual=False)
+        store.db.execute("UPDATE words SET last_seen_at = '2026-01-01T00:00:00+00:00' "
+                         "WHERE lemma = 'red'")
+        store.db.execute("UPDATE words SET last_seen_at = '2026-01-02T00:00:00+00:00' "
+                         "WHERE lemma = 'blue'")
+        assert store.review_due(10) == ["red", "blue"]
+        store.expose(["red"], 1)
         assert store.review_due(10) == ["blue", "red"]
 
+    def test_a_word_with_no_due_date_is_due(self, store):
+        store.set_box("red", 2, manual=False)
+        assert store.get("red")["due_at"] is None
+        assert store.review_due(10) == ["red"]
+
     def test_review_is_capped(self, store):
-        store.touch(["red", "blue"], 1, False)
+        store.set_box("red", 2, manual=False)
+        store.set_box("blue", 2, manual=False)
         assert len(store.review_due(1)) == 1
+
+    def test_pending_words_wait_for_the_child(self, store):
+        store.expose(["red", "blue"], 1, introduce=["red", "blue"], at=day(1))
+        assert store.pending(5, 3, day(1)) == ["red", "blue"]
+        store.practice(["red"], 1, at=day(1))
+        assert store.pending(5, 3, day(1)) == ["blue"]
+        assert store.pending(5, 3, day(2)) == []        # a new day
+
+    def test_a_word_shown_often_enough_stops_being_pending(self, store):
+        for n in range(3):
+            store.expose(["red"], 1, introduce=["red"], at=day(1))
+        assert store.pending(5, 3, day(1)) == []
+
+    def test_introduced_today_counts_curriculum_words(self, store):
+        store.expose(["red", "cat"], 1, introduce=["red", "cat"], at=day(1))
+        store.add_topic_word("moon", "中秋节", 1, at=day(1))
+        assert store.introduced_today(day(1)) == 2
+        assert store.introduced_today(day(2)) == 0
+
+    def test_topic_words_keep_their_context(self, store):
+        assert store.add_topic_word("moon", "中秋节", 1, at=day(1)) is True
+        assert store.add_topic_word("moon", "别的话题", 1, at=day(1)) is False
+        assert store.topic_words() == {"moon": "中秋节"}
+        assert store.get("moon")["box"] == 1
+
+    def test_last_topics_come_from_the_last_session_with_talk(self, store):
+        first = store.start_session("kid", at=day(1))
+        for _ in range(3):
+            store.log_turn(first, "x", "y", [], at=day(1))
+        store.add_topic_word("moon", "中秋节", first, at=day(1, 13))
+        second = store.start_session("kid", at=day(2))
+        assert store.last_topics(second) == ["moon(中秋节)"]
+        assert store.last_topics(first) == []
+
+    def test_an_old_database_gains_the_new_columns(self, tmp_path):
+        import sqlite3
+        path = tmp_path / "learners" / "old" / "state.sqlite"
+        path.parent.mkdir(parents=True)
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE words (lemma TEXT PRIMARY KEY, unit TEXT NOT NULL, "
+                   "box INTEGER NOT NULL DEFAULT 0, introduced_at TEXT, "
+                   "last_seen_at TEXT, last_session INTEGER, "
+                   "practices INTEGER NOT NULL DEFAULT 0, "
+                   "sessions_seen INTEGER NOT NULL DEFAULT 0, "
+                   "manual INTEGER NOT NULL DEFAULT 0)")
+        db.execute("INSERT INTO words(lemma, unit, box) VALUES ('red', 'colors', 3)")
+        db.commit()
+        db.close()
+        old = Store("old", tmp_path)
+        assert old.get("red")["due_at"] is None
+        assert old.get("red")["exposures"] == 0
+        old.close()
 
     def test_new_and_known_queries(self, store):
         assert store.new_in_unit("colors", 2) == ["red", "blue"]
-        store.touch(["red"], 1, False)
+        store.practice(["red"], 1)
         assert store.new_in_unit("colors", 2) == ["blue"]
         assert store.known_in_units(["colors"], 10) == ["red"]
         assert store.known_in_units([], 10) == []
@@ -265,6 +368,22 @@ class TestStateBlock:
         plan = state_block.Plan(portrait=["x" * 80])
         assert state_block.render(plan, state_block.Caps(line_chars=10)) == \
             "【画像: " + "x" * 9 + "…】"
+
+
+class TestLessonBlock:
+    def test_theme_comes_first_and_hint_last(self):
+        plan = state_block.Plan(title="动物", pattern="I like ___.",
+                                new=["cat"], hint="聊聊宠物")
+        assert state_block.render(plan) == \
+            "【单元: 动物 ｜ 句型: I like ___. ｜ 新授: cat ｜ 本轮: 聊聊宠物】"
+
+    def test_topics_are_listed(self):
+        plan = state_block.Plan(topics=["彩虹", "画画"])
+        assert state_block.render(plan) == "【话题: 彩虹、画画】"
+
+    def test_a_topic_word_carries_its_context(self):
+        plan = state_block.Plan(review=["moon", "cat"], notes={"moon": "中秋节"})
+        assert state_block.render(plan) == "【复习: moon(中秋节), cat】"
 
 
 class TestProfile:
@@ -359,10 +478,30 @@ class TestMatch:
         assert match.find("cat", []) == []
 
 
+class TestTeachingPoints:
+    def test_the_invitation_to_repeat_names_the_word(self):
+        assert match.teaching_points("月亮的英文是 moon，跟我读一遍：moon！") == ["moon"]
+
+    def test_the_gloss_form_names_the_word(self):
+        assert match.teaching_points("兔子的英文是 rabbit，就是兔子。") == ["rabbit"]
+
+    def test_a_phrase_is_not_a_word(self):
+        assert match.teaching_points("跟我读一遍：magic pen！") == []
+
+    def test_quotes_and_full_width_punctuation(self):
+        assert match.teaching_points("跟我读：“moon”！") == ["moon"]
+
+    def test_english_in_passing_is_not_a_teaching_point(self):
+        assert match.teaching_points("Sunny 老师觉得 good 很好。") == []
+
+    def test_single_letters_are_ignored(self):
+        assert match.teaching_points("跟我读一遍：I！") == []
+
+
 class TestScheduler:
     def test_without_a_pick_the_first_unfinished_unit_wins(self, store):
         assert scheduler.current_unit(store, UNITS).id == "colors"
-        store.touch(["red", "blue"], 1, False)
+        store.expose(["red", "blue"], 1, introduce=["red", "blue"])
         assert scheduler.current_unit(store, UNITS).id == "animals"
 
     def test_parent_pick_wins(self, store):
@@ -371,11 +510,20 @@ class TestScheduler:
 
     def test_parent_pick_survives_a_finished_unit(self, store):
         store.set_setting(scheduler.CURRENT_UNIT, "animals")
-        store.touch(["cat"], 1, False)
+        store.practice(["cat"], 1)
         assert scheduler.current_unit(store, UNITS).id == "animals"
 
     def test_unknown_pick_falls_back_to_automatic(self, store):
         store.set_setting(scheduler.CURRENT_UNIT, "ghost")
+        assert scheduler.current_unit(store, UNITS).id == "colors"
+
+    def test_a_finished_curriculum_goes_back_to_the_weakest_unit(self, store):
+        store.set_box("red", 5, manual=False)
+        store.set_box("blue", 5, manual=False)
+        store.set_box("cat", 1, manual=False)
+        assert scheduler.current_unit(store, UNITS).id == "animals"
+        store.set_box("cat", 6, manual=False)
+        store.set_box("blue", 1, manual=False)
         assert scheduler.current_unit(store, UNITS).id == "colors"
 
     def test_plan_respects_the_caps(self, store):
@@ -384,11 +532,77 @@ class TestScheduler:
         assert (plan.unit, plan.new) == ("colors", ["red"])
 
     def test_plan_carries_review_and_keeps_it_out_of_known(self, store):
-        store.touch(["red", "blue"], 1, False)
+        store.set_box("red", 2, manual=False)
+        store.set_box("blue", 2, manual=False)
         plan = scheduler.plan(store, UNITS, state_block.Caps(new_items=1))
-        assert plan.review == ["red", "blue"]
+        assert sorted(plan.review) == ["blue", "red"]
         assert plan.new == ["cat"]
         assert "red" not in plan.known and "blue" not in plan.known
+
+    def test_the_next_word_waits_until_the_child_has_said_one(self, store):
+        store.expose(["red"], 1, introduce=["red"], at=day(1))
+        again = scheduler.plan(store, UNITS, state_block.Caps(new_items=2),
+                               at=day(1))
+        assert again.new == ["red"]
+        store.practice(["red"], 1, at=day(1))
+        moved = scheduler.plan(store, UNITS, state_block.Caps(new_items=2),
+                               at=day(1))
+        assert moved.new == ["blue"]
+
+    def test_a_word_the_child_never_says_does_not_hold_the_lesson(self, store):
+        for _ in range(scheduler.MAX_EXPOSURES):
+            store.expose(["red"], 1, introduce=["red"], at=day(1))
+        plan = scheduler.plan(store, UNITS, state_block.Caps(new_items=2),
+                              at=day(1))
+        assert plan.new == ["blue"]
+
+    def test_the_daily_cap_holds(self, store):
+        store.expose(["red"], 1, introduce=["red"], at=day(1))
+        store.practice(["red"], 1, at=day(1))
+        capped = scheduler.plan(store, UNITS, state_block.Caps(new_items=2),
+                                new_per_day=1, at=day(1))
+        assert capped.new == []
+        tomorrow = scheduler.plan(store, UNITS, state_block.Caps(new_items=2),
+                                  new_per_day=1, at=day(2))
+        assert tomorrow.new == ["blue"]
+
+    def test_the_plan_names_the_lesson(self, store):
+        plan = scheduler.plan(store, UNITS, state_block.Caps())
+        assert plan.title == "颜色"
+
+    def test_topics_only_open_a_conversation(self, store):
+        units = [Unit(id="colors", title="颜色", goal="", words=("red",),
+                      patterns=(), after=(), sessions=1, topics=("彩虹", "画画"))]
+        store.sync_units(units)
+        assert scheduler.plan(store, units, state_block.Caps(),
+                              opening=True).topics == ["彩虹", "画画"]
+        assert scheduler.plan(store, units, state_block.Caps()).topics == []
+
+    def test_a_pattern_appears_once_the_unit_is_secure(self, store):
+        units = [Unit(id="colors", title="颜色", goal="", words=("red", "blue"),
+                      patterns=("It is red.",), after=(), sessions=1)]
+        assert scheduler.plan(store, units, state_block.Caps()).pattern == ""
+        store.set_box("red", 2, manual=False)
+        store.set_box("blue", 1, manual=False)
+        plan = scheduler.plan(store, units, state_block.Caps())
+        assert plan.pattern == "It is red."
+        assert "句型" in plan.hint
+
+    def test_the_hint_is_one_suggestion(self):
+        assert "red" in scheduler.hint(["red"], ["cat"], "", False)
+        assert "cat" in scheduler.hint([], ["cat"], "", False)
+        assert "开场" not in scheduler.hint([], [], "", False)
+        assert "不要宣布" in scheduler.hint(["red"], [], "", True)
+
+    def test_last_time_reaches_the_opening_plan(self, store):
+        first = store.start_session("kid", at=day(1))
+        for _ in range(3):
+            store.log_turn(first, "x", "y", [], at=day(1))
+        store.add_topic_word("moon", "中秋节", first, at=day(1, 13))
+        second = store.start_session("kid", at=day(2))
+        plan = scheduler.plan(store, UNITS, state_block.Caps(),
+                              session_id=second)
+        assert plan.digest == ["moon(中秋节)"]
 
     def test_window_is_the_unit_and_two_before_it(self):
         assert scheduler.window(UNITS, "animals") == ["colors", "animals"]
@@ -425,6 +639,108 @@ class TestTurnPrompt:
         session.load_curriculum()
         assert session.history == []
         assert session.units
+
+
+class TestRecordTurn:
+    def _turn(self, session, child, tutor):
+        """One turn the way the orchestrator runs it: plan, reply, record."""
+        main.build_messages(session, child)
+        main.record_turn(session, child, [tutor], interrupted=False)
+        session.history.append({"role": "user", "content": child})
+
+    def _plan_turn(self, session):
+        """Advance to the next turn that works the plan's words in."""
+        while not scheduler.plan_turn(session.turn_count):
+            session.turn_count += 1
+
+    def test_planned_words_are_introduced_and_wait_for_the_child(self, session):
+        self._plan_turn(session)
+        main.build_messages(session, "你好")
+        assert session.plan.new == ["hello", "hi"]
+        self._turn(session, "你好", "你好呀。hello 就是你好，跟我读一遍：hello！")
+        boxes = session.store.boxes()
+        assert boxes["hello"] == 1 and boxes["hi"] == 0
+        self._plan_turn(session)
+        main.build_messages(session, "嗯")
+        assert session.plan.new == ["hello"]          # still waiting on the child
+        self._turn(session, "Hello", "没错，就是 hello！")
+        self._plan_turn(session)
+        main.build_messages(session, "嗯")
+        assert "hello" not in session.plan.new
+
+    def test_a_word_mentioned_in_passing_is_not_introduced(self, session):
+        self._turn(session, "你好", "你好呀，我们可以聊聊 bus 和 bike 吗？")
+        assert session.store.boxes()["bus"] == 0
+
+    def test_function_words_rotate_through_review(self, session):
+        """The queue used to stay on the same five function words forever."""
+        for lemma in session.vocab:
+            session.store.set_box(lemma, 2, manual=False)
+        session.store.db.execute(
+            "UPDATE words SET last_seen_at = '2026-09-30T00:00:00+00:00'")
+        session.store.db.execute(
+            "UPDATE words SET last_seen_at = '2026-09-17T00:00:00+00:00' "
+            "WHERE lemma IN ('i', 'my', 'what', 'where', 'who')")
+        session.store.db.commit()
+        self._plan_turn(session)
+        main.build_messages(session, "你好")
+        first = list(session.plan.review)
+        assert set(first) == {"i", "my", "what", "where", "who"}
+        main.record_turn(session, "你好", ["I my what where who"], False)
+        self._plan_turn(session)
+        main.build_messages(session, "你好")
+        assert set(session.plan.review).isdisjoint(first)
+
+    def test_english_function_words_from_the_child_count(self, session):
+        self._turn(session, "This is my magic pen", "好棒的笔！")
+        assert session.store.get("my")["practices"] == 1
+        assert session.store.get("my")["box"] == 1
+
+    def test_a_word_taught_for_the_childs_topic_is_kept(self, session):
+        self._turn(session, "今天是中秋节",
+                   "中秋节要赏月吃月饼。月亮的英文是 moon，跟我读一遍：moon！")
+        assert session.store.topic_words() == {"moon": "今天是中秋节"}
+        self._turn(session, "moon", "没错！")
+        assert session.store.get("moon")["practices"] == 1
+
+    def test_a_curriculum_word_is_not_a_topic_word(self, session):
+        self._turn(session, "猫怎么说", "猫的英文是 cat，跟我读一遍：cat！")
+        assert session.store.topic_words() == {}
+
+    def test_the_first_turn_gets_topics_and_later_turns_do_not(self, session):
+        first = main.build_messages(session, "你好")[-1]["content"]
+        assert "话题:" in first and "不要宣布" in first
+        session.history.append({"role": "user", "content": "你好"})
+        later = main.build_messages(session, "嗯")[-1]["content"]
+        assert "话题:" not in later
+
+
+class TestTurnAlternation:
+    def test_most_turns_follow_the_childs_topic(self, session):
+        kinds = []
+        for n in range(6):
+            session.turn_count = n
+            main.build_messages(session, "你好")
+            kinds.append(bool(session.plan.new or session.plan.review))
+        assert kinds == [False, False, True, False, False, True]
+
+    def test_a_topic_turn_carries_no_plan_words(self, session):
+        session.turn_count = 1
+        session.history.append({"role": "user", "content": "你好"})
+        block = main.build_messages(session, "嗯")[-1]["content"]
+        assert "新授" not in block and "复习" not in block and "已会" not in block
+        assert "只教话题里的一个简单词" in block
+
+    def test_a_topic_turn_introduces_nothing(self, session):
+        session.turn_count = 1
+        main.build_messages(session, "你好")
+        main.record_turn(session, "你好", ["hello 就是你好，跟我读一遍：hello！"], False)
+        assert session.store.boxes()["hello"] == 0
+
+    def test_turns_restart_with_a_new_conversation(self, session):
+        session.turn_count = 5
+        session.load_curriculum()
+        assert session.turn_count == 0
 
 
 class TestEndpoints:
@@ -548,4 +864,4 @@ class TestTeachingConfig:
 
     def test_block_caps_match_the_renderer(self):
         caps = state_block.Caps(**load()["teaching"]["block"])
-        assert (caps.new_items, caps.review_items, caps.known_items) == (2, 5, 20)
+        assert (caps.new_items, caps.review_items, caps.known_items) == (2, 5, 10)

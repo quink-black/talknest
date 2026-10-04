@@ -18,6 +18,7 @@ units:
     untracked: [i, my]
     patterns: ["Hello!", "My name is ___.", "Bye bye!"]
     after: []
+    topics: [自己的名字和昵称, 最喜欢的卡通人物叫什么]
     sessions: 2
 
   - id: colors
@@ -26,6 +27,7 @@ units:
     words: [red, yellow, blue, green, black, white]
     patterns: ["It is red.", "I like blue."]
     after: [greetings]
+    topics: [最喜欢的颜色, 彩虹和画画]
     sessions: 2
 
   - id: numbers_1
@@ -34,6 +36,7 @@ units:
     words: [one, two, three, four, five, six]
     patterns: ["One, two, three!"]
     after: [greetings]
+    topics: [数手指和数楼梯, 几岁了和家里几口人]
     sessions: 2
 
   - id: animals
@@ -42,6 +45,7 @@ units:
     words: [cat, dog, rabbit, bird, fish, panda]
     patterns: ["It is a cat.", "I have a dog."]
     after: [colors]
+    topics: [动物园和家里的宠物, 最喜欢的动画动物]
     sessions: 3
 
   - id: food
@@ -50,6 +54,7 @@ units:
     words: [apple, banana, milk, egg, bread, rice]
     patterns: ["I like apples.", "I want milk."]
     after: [numbers_1]
+    topics: [早饭吃了什么, 最爱吃和不爱吃的东西]
     sessions: 3
 
   - id: family
@@ -58,6 +63,7 @@ units:
     words: [mother, father, sister, brother, grandma, grandpa]
     patterns: ["This is my mother.", "I have a sister."]
     after: [greetings]
+    topics: [家里谁最爱做饭, 周末和家人去哪里]
     sessions: 2
 
   - id: body
@@ -66,6 +72,7 @@ units:
     words: [head, hand, eye, nose, mouth, ear]
     patterns: ["This is my nose.", "Wash your hands."]
     after: [family]
+    topics: [玩游戏时用身体的哪里, 洗手刷牙]
     sessions: 2
 
   - id: toys
@@ -74,6 +81,7 @@ units:
     words: [ball, doll, car, kite, bear, robot]
     patterns: ["I have a ball.", "Let us play."]
     after: [colors]
+    topics: [最喜欢的玩具, 和朋友一起玩什么]
     sessions: 2
 
   - id: school
@@ -82,6 +90,7 @@ units:
     words: [school, book, pen, bag, desk, teacher]
     patterns: ["This is my book.", "I go to school."]
     after: [family]
+    topics: [书包里有什么, 最喜欢的老师和课]
     sessions: 2
 
   - id: numbers_2
@@ -90,6 +99,7 @@ units:
     words: [seven, eight, nine, ten, zero]
     patterns: ["I am eight."]
     after: [numbers_1]
+    topics: [生日和年龄, 数一数身边的东西]
     sessions: 2
 
   - id: clothes
@@ -98,6 +108,7 @@ units:
     words: [hat, coat, shoe, sock, shirt, dress]
     patterns: ["Put on your coat.", "I like this hat."]
     after: [colors]
+    topics: [今天穿了什么, 冬天和夏天的衣服]
     sessions: 2
 
   - id: drinks
@@ -106,6 +117,7 @@ units:
     words: [water, juice, tea, soup, cup, bottle]
     patterns: ["I want water.", "Here is your juice."]
     after: [food]
+    topics: [口渴想喝什么, 喝水和果汁]
     sessions: 2
 
   - id: fruit
@@ -114,6 +126,7 @@ units:
     words: [orange, pear, grape, peach, lemon, cherry]
     patterns: ["I like grapes.", "It is a pear."]
     after: [food]
+    topics: [最爱的水果, 水果拼盘]
     sessions: 2
 
   - id: weather
@@ -122,6 +135,7 @@ units:
     words: [sun, rain, wind, snow, hot, cold]
     patterns: ["It is hot.", "I like the rain."]
     after: [colors]
+    topics: [今天天气, 下雨天做什么]
     sessions: 2
 
   - id: home
@@ -130,6 +144,7 @@ units:
     words: [bed, door, table, chair, window, room]
     patterns: ["This is my room.", "Open the door."]
     after: [family]
+    topics: [自己的房间, 家里最喜欢的角落]
     sessions: 2
 
   - id: actions
@@ -138,6 +153,7 @@ units:
     words: [run, jump, walk, sit, eat, drink]
     patterns: ["I can run.", "Sit down, please."]
     after: [body]
+    topics: [体育课和运动, 模仿动物的动作]
     sessions: 3
 
   - id: feelings
@@ -146,6 +162,7 @@ units:
     words: [happy, sad, hungry, tired, angry, scared]
     patterns: ["I am happy.", "Are you tired?"]
     after: [actions]
+    topics: [今天的心情, 开心和难过的事]
     sessions: 2
 
   - id: size
@@ -154,6 +171,7 @@ units:
     words: [big, small, long, short, tall, new]
     patterns: ["It is big.", "I want the small one."]
     after: [colors]
+    topics: [比一比谁高谁大, 大象和蚂蚁]
     sessions: 2
 
   - id: places
@@ -164,6 +182,7 @@ units:
     untracked: [in, "on"]
     patterns: ["It is on the table.", "Look up!"]
     after: [home]
+    topics: [东西放在哪里, 捉迷藏]
     sessions: 2
 
   - id: time
@@ -172,6 +191,7 @@ units:
     words: [today, tomorrow, morning, night, now, again]
     patterns: ["See you tomorrow.", "Good morning!"]
     after: [numbers_2]
+    topics: [周末和节日, 早上起床和晚上睡觉]
     sessions: 2
 
   - id: play
@@ -180,6 +200,7 @@ units:
     words: [play, game, song, dance, draw, read]
     patterns: ["Let us play a game.", "I can draw."]
     after: [toys]
+    topics: [最爱的游戏, 唱歌和跳舞]
     sessions: 2
 
   - id: transport
@@ -188,6 +209,7 @@ units:
     words: [bus, bike, train, plane, boat, road]
     patterns: ["I go by bus.", "Look at the train."]
     after: [toys]
+    topics: [怎么去学校, 坐过的交通工具]
     sessions: 2
 
   - id: nature
@@ -196,6 +218,7 @@ units:
     words: [tree, flower, grass, river, sky, star]
     patterns: ["Look at the tree.", "The sky is blue."]
     after: [animals]
+    topics: [公园里的花草树, 看星星和月亮]
     sessions: 2
 
   - id: questions
@@ -205,6 +228,7 @@ units:
     untracked: [what, where, who, how, "yes", "no"]
     patterns: ["What is it?", "Yes, it is."]
     after: [greetings]
+    topics: [不知道怎么说的东西, 好奇的问题]
     sessions: 3
 
   - id: manners
@@ -213,4 +237,5 @@ units:
     words: [please, thanks, sorry, welcome, excuse, goodbye]
     patterns: ["Thank you.", "Sorry!", "You are welcome."]
     after: [greetings]
+    topics: [在学校怎么有礼貌, 谢谢和对不起]
     sessions: 2

@@ -85,6 +85,10 @@ BLOCK_CAPS = state_block.Caps(**TEACHING_CFG.get("block", {}))
 # the socket is gone, so it never delays a reply.
 DIGEST_MODE = str(TEACHING_CFG.get("digest", "off"))
 COMPACT_MESSAGES = int(TEACHING_CFG.get("compact_messages", 8))
+NEW_PER_DAY = int(TEACHING_CFG.get("new_per_day", 5))
+# Topic words kept from one reply: the tutor is meant to teach one point a
+# turn, so more than this is a misparse, not a lesson.
+TOPIC_WORDS_PER_TURN = 2
 DEFAULT_LEARNER = str(TEACHING_CFG.get("default_learner", "default"))
 HISTORY_MESSAGES = int(
     cfg["llm"]["profiles"][cfg["llm"]["active"]].get("history_messages", 20))
@@ -107,11 +111,14 @@ TEACHING_RULES = (
     "The text in brackets at the start of the child's message is your "
     "teaching plan and a record of what the child has met. It is not "
     "something the child said, so never repeat it and never refer to it. "
-    "Teach only the words listed under 新授. Words under 已会 are already "
-    "known: use them freely, but never present them as new. Bring words "
-    "under 复习 back into the conversation naturally instead of drilling "
-    "them. When the block lists no new words, ask the child what they "
-    "would like to talk about."
+    "Introduce only the words listed under 新授. Words under 已会 are "
+    "already known: use them freely, but never present them as new. "
+    "Words under 复习 are due for another look: bring them back inside "
+    "the conversation instead of drilling them. 单元, 句型 and 话题 name "
+    "the lesson's theme, a sentence frame and conversation starters, and "
+    "本轮 is the one thing suggested for this turn. When the block lists "
+    "no new words, there is nothing to introduce: carry on with the "
+    "child's own topic or ask what they would like to talk about."
 )
 
 web_dir = str(pathlib.Path(__file__).resolve().parent.parent.parent / "web")
@@ -211,6 +218,9 @@ class Session:
         self.summary = ""
         self.compacting = False
         self.session_id: int | None = None
+        # Child turns so far in this conversation, which the plan uses to
+        # alternate following the child's topic with working in plan words.
+        self.turn_count = 0
         if TEACHING:
             self.open_learner(DEFAULT_LEARNER)
 
@@ -241,6 +251,7 @@ class Session:
         # back a box, so they start turning up in the review queue again.
         self.store.demote_stale()
         self.session_id = self.store.start_session(self.mode)
+        self.turn_count = 0
 
     def close(self):
         """End the session row and release the store."""
@@ -342,15 +353,36 @@ def record_turn(sess: Session, learner_text: str, spoken: list[str],
     """
     if sess.store is None or sess.session_id is None:
         return
-    taught = match.find(" ".join(spoken), sess.tracked)
-    # Words too common to recognise in speech are credited when the plan
-    # asked for them: the tutor was told to teach them, so they came up.
-    taught += [w for w in sess.plan.new if w not in sess.tracked]
-    heard = match.find(learner_text, sess.tracked)
-    sess.store.touch(taught, sess.session_id, practiced=False)
-    sess.store.touch(heard, sess.session_id, practiced=True)
+    sess.turn_count += 1
+    said = " ".join(spoken)
+    topic = sess.store.topic_words()
+    # Words too common to recognise in free speech are only looked for when
+    # the plan asked for them: the tutor was told to teach those.
+    planned = {w for w in sess.plan.new + sess.plan.review
+               if w in sess.vocab and w not in sess.tracked}
+    taught = match.find(said, sess.tracked | set(topic) | planned)
+    # Everything the child says in English counts, function words included:
+    # the tutor talks mostly in Chinese, so English in the child's turn is
+    # the child producing it.
+    heard = match.find(learner_text, sess.vocab | set(topic))
+    sess.store.expose(taught, sess.session_id, introduce=sess.plan.new)
+    sess.store.practice(heard, sess.session_id)
+    keep_topic_words(sess, said, learner_text, sess.vocab | set(topic))
     sess.store.log_turn(sess.session_id, learner_text, " ".join(spoken),
                         sorted(set(taught) | set(heard)), interrupted)
+
+
+def keep_topic_words(sess: Session, said: str, learner_text: str,
+                     known: set[str]) -> None:
+    """Remember words the tutor taught that the curriculum does not have.
+
+    They arise from what the child was talking about, so they are kept with
+    a few words of that talk and come back for review like any other word.
+    """
+    note = " ".join(learner_text.split())[:10]
+    fresh = [w for w in match.teaching_points(said) if w not in known]
+    for lemma in fresh[:TOPIC_WORDS_PER_TURN]:
+        sess.store.add_topic_word(lemma, note, sess.session_id)
 
 
 # Folding the oldest turns into a summary rather than dropping them: the
@@ -423,7 +455,10 @@ def build_messages(sess: Session, text: str) -> list[dict]:
     """
     plan = state_block.Plan()
     if sess.store is not None and sess.units:
-        plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS, sess.portrait)
+        plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS, sess.portrait,
+                              session_id=sess.session_id,
+                              opening=not sess.history,
+                              new_per_day=NEW_PER_DAY, turn=sess.turn_count)
     if sess.summary:
         plan = replace(plan, summary=sess.summary)
     sess.plan = plan   # the turn's bookkeeping credits what was asked for

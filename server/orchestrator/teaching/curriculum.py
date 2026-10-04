@@ -37,6 +37,10 @@ class Unit:
     # up in almost any English sentence, so matching them would report the
     # child as having produced words they never said.
     untracked: tuple[str, ...] = ()
+    # Things a child of this age likes to talk about around the unit's
+    # words. The tutor opens a conversation with one when the child has not
+    # brought a topic of their own.
+    topics: tuple[str, ...] = ()
 
 
 def load(mode: str, lexicon: set[str] | None = None,
@@ -91,6 +95,7 @@ def _unit(raw: dict, path: Path) -> Unit:
         after=tuple(str(a) for a in raw.get("after") or ()),
         sessions=int(raw.get("sessions", 1)),
         untracked=_words(raw, "untracked", path),
+        topics=tuple(str(t) for t in raw.get("topics") or ()),
     )
 
 
