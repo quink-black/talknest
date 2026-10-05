@@ -17,6 +17,9 @@ Talknest 是一个本地部署的英语口语对话练习应用，面向儿童�
 - **三档模式**：`kid`（儿童教学：中文对话加英文教学点）、`kid_upper`
   （小学高年级：中文对话里夹杂短英文句）、`adult`（全英文对话）。三档
   模式的提示词与音色全部集中在 `server/config.yaml`。
+- **声纹识别**：家庭成员在页面的“声纹录入”面板里各录几段话，服务端
+  就能分辨一句话来自孩子、爸爸还是妈妈。家长的话不会计入孩子的练习，
+  对话气泡上也会标出说话的人。详见“声纹识别”一节。
 - **音频设备热插拔**：蓝牙耳机断连时页面自动暂停并提示缺少哪个设备，
   设备回来之后自动恢复会话；麦克风与扬声器可以手动指定，扬声器默认
   跟随麦克风所属的设备。
@@ -69,6 +72,7 @@ model/
   Qwen3-TTS-12Hz-0.6B-CustomVoice/              TTS
   Qwen3-TTS-Tokenizer-12Hz/                     TTS 分词器
   silero-vad/silero_vad.onnx                    VAD
+  speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx   声纹（可选）
 ```
 
 ## 教学词库
@@ -209,6 +213,47 @@ HFP 设备时，客户端降级为半双工，因为 HFP 的时延抖动实测�
 客户端不需要声卡，因此可以用于离线回归。实测记录见
 [docs/bench/cli-aec.md](docs/bench/cli-aec.md)。
 
+## 声纹识别
+
+声纹识别用 3D-Speaker 的 CAM++ 模型（ONNX，约 27 MB）把一段语音转成
+192 维的声纹向量，再与已录入的家庭成员比较。模型在 CPU 上运行，不占用
+显存。权重放在 `model/speaker/`，来源是 sherpa-onnx 发布的
+`speaker-recongition-models`，文件名见上面的目录树。权重缺失时，
+`GET /learners/{learner}/speakers` 返回 `ready: false`，录入面板置灰，
+对话流程保持原样。
+
+**录入。** 打开页面侧栏的“声纹录入”，在孩子、爸爸、妈妈三行里点“录一段”，
+按提示说话，约 8 秒后自动停止。每个人建议录两三段，累计 15 秒以上。录音
+期间页面不把声音发给对话，服务端也不保存录音，只保存声纹向量，位置是
+`data/learners/<学习者>/speakers.json`。声纹跟着“我是谁”走，换一个学习者
+需要重新录入。
+
+**启用条件。** 孩子和至少一位家长都录入之后，识别才会启用。识别结果有
+四种：`child`、`dad`、`mom`，以及无法判断（`null`）。无法判断的情况包括
+有效语音不足 1 秒、与最接近的人相似度低于 `min_score`，以及最接近的两个
+人分数相差不到 `margin`。无法判断的话按孩子处理，因为孩子是主要使用者。
+
+**对教学的影响。** 爸爸和妈妈在教学逻辑里同属“家长”：
+
+- 家长的话不记入孩子的练习词，不推进孩子的轮次计数，也不会被当作对“跟我读”
+  的回答。
+- 发给 LLM 的消息带有 `【家长】` 前缀，不附教学计划块；系统提示词会说明
+  这个前缀的含义，让老师简短回应家长，再把话题交还给孩子。
+- 孩子的学习画像只取孩子本人的轮次。
+
+**接口。** 录入面板使用下面三个 REST 接口，`role` 取 `child`、`dad`、`mom`：
+
+| 方法与路径 | 作用 |
+|---|---|
+| `GET /learners/{learner}/speakers` | 各角色已录的段数与秒数，以及 `ready`、`enabled` |
+| `POST /learners/{learner}/speakers/{role}` | 请求体是 24 kHz 单声道 int16 原始 PCM，追加一段声纹 |
+| `DELETE /learners/{learner}/speakers/{role}` | 清除该角色的全部声纹 |
+
+WebSocket 的 `user_text` 事件新增 `speaker` 字段，取值同上。阈值和开关在
+`server/config.yaml` 的 `speaker_id` 一节。识别准确率取决于麦克风和房间，
+也取决于孩子的声音与家长的声音有多接近，因此首次使用时建议先用日常对话
+观察气泡上的标签，再按需要调整 `min_score` 与 `margin`。
+
 ## 音频设备
 
 页面上的“麦克风 / 扬声器”下拉框显示当前实际在用的设备，也可以直接指定
@@ -243,6 +288,7 @@ local.env              本机配置（不入库，见 local.env.example）
 ./venv/bin/python tests/ws_smoke.py        # 全链路：合成用户语音 → 流式推流 → 转写/回复/音频
 ./venv/bin/python tests/ws_smoke.py --barge   # 断言插话能打断
 ./venv/bin/python tests/ws_smoke.py --reask   # 断言追问时已有回答不丢
+./venv/bin/python tests/ws_speaker_smoke.py   # 声纹：录入三个合成音色，断言识别结果（需先在另一端口起服务，见脚本头部）
 ./venv/bin/python scripts/bench_llm.py     # LLM 延迟基准
 ./venv/bin/python scripts/eval_teaching.py # 教学计划：跟不跟计划、计划块带来多少延迟
 ```

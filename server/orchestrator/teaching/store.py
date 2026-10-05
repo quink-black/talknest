@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS turns (
     learner_text TEXT,
     tutor_text TEXT,
     items TEXT,
-    interrupted INTEGER NOT NULL DEFAULT 0
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    speaker TEXT
 );
 """
 
@@ -66,9 +67,13 @@ CREATE TABLE IF NOT EXISTS turns (
 # Columns added after the first release; databases created before them get
 # the columns on open.
 _ADDED_COLUMNS = {
-    "due_at": "TEXT",
-    "exposures": "INTEGER NOT NULL DEFAULT 0",
-    "note": "TEXT",
+    "words": {
+        "due_at": "TEXT",
+        "exposures": "INTEGER NOT NULL DEFAULT 0",
+        "note": "TEXT",
+    },
+    # Who spoke: child, dad or mom; NULL when the voice was not identified.
+    "turns": {"speaker": "TEXT"},
 }
 
 
@@ -104,10 +109,13 @@ class Store:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
-        have = {r["name"] for r in self.db.execute("PRAGMA table_info(words)")}
-        for name, kind in _ADDED_COLUMNS.items():
-            if name not in have:
-                self.db.execute(f"ALTER TABLE words ADD COLUMN {name} {kind}")
+        for table, columns in _ADDED_COLUMNS.items():
+            have = {r["name"]
+                    for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns.items():
+                if name not in have:
+                    self.db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
         self.db.commit()
 
     def close(self) -> None:
@@ -338,19 +346,26 @@ class Store:
         self.db.commit()
 
     def session_turns(self, session_id: int) -> list[dict]:
-        """Turns of one session, for the portrait written at its end."""
+        """The learner's own turns of one session, for the portrait written
+        at its end. A parent speaking is not the learner."""
         rows = self.db.execute(
             "SELECT learner_text, tutor_text, items, interrupted FROM turns "
-            "WHERE session = ? ORDER BY id", (session_id,)).fetchall()
+            "WHERE session = ? AND (speaker IS NULL OR speaker = 'child') "
+            "ORDER BY id", (session_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def log_turn(self, session_id: int, learner_text: str, tutor_text: str,
-                 items, interrupted: bool = False, at: str | None = None) -> None:
+                 items, interrupted: bool = False, at: str | None = None,
+                 speaker: str | None = None) -> None:
         self.db.execute(
             "INSERT INTO turns(session, ts, learner_text, tutor_text, items, "
-            "interrupted) VALUES (?, ?, ?, ?, ?, ?)",
+            "interrupted, speaker) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (session_id, at or now(), learner_text, tutor_text,
-             json.dumps(items, ensure_ascii=False), int(interrupted)))
-        self.db.execute(
-            "UPDATE sessions SET turns = turns + 1 WHERE id = ?", (session_id,))
+             json.dumps(items, ensure_ascii=False), int(interrupted), speaker))
+        # The session's turn count is what makes it count as practice, and
+        # a parent talking is not the learner practising.
+        if speaker in (None, "child"):
+            self.db.execute(
+                "UPDATE sessions SET turns = turns + 1 WHERE id = ?",
+                (session_id,))
         self.db.commit()

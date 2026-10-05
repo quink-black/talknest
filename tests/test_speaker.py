@@ -260,3 +260,185 @@ class TestEnrollmentEndpoints:
             main.session_by_ws.clear()
             sess.close()
 
+
+class _WS:
+    client_state = main.WebSocketState.CONNECTED
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_text(self, text):
+        self.sent.append(json.loads(text))
+
+    async def send_bytes(self, data):
+        pass
+
+
+class _TTS:
+    async def pcm_chunks(self, text, **kw):
+        return
+        yield
+
+
+class _ASR:
+    def __init__(self, text):
+        self.text = text
+
+    async def transcribe(self, pcm, sr=None):
+        return self.text
+
+
+class _LLM:
+    """Answers with one line and keeps the prompts it was given."""
+
+    def __init__(self, reply="好的。"):
+        self.reply = reply
+        self.prompts = []
+
+    async def stream_chat(self, messages, cancel=None, max_tokens=None):
+        self.prompts.append(messages)
+        yield self.reply
+
+
+@pytest.fixture
+def household(tmp_path, monkeypatch):
+    """A session whose learner has the child and both parents enrolled."""
+    import asyncio
+    monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main.speaker, "shared_models",
+                        lambda cfg: (FakeEmbedder(VOICES), FakeTrimmer()))
+    monkeypatch.setattr(main, "SPEAKER_CFG", CFG)
+    sess = main.Session()
+    sess.open_learner("tester")
+    enroll_all(sess.speakers)
+    llm = _LLM()
+    monkeypatch.setattr(main, "llm", llm)
+    monkeypatch.setattr(main, "tts", _TTS())
+
+    def say(heard, voice):
+        ws = _WS()
+        monkeypatch.setattr(main, "asr", _ASR(heard))
+        asyncio.run(main.handle_utterance(ws, sess, clip(voice), asyncio.Event()))
+        return ws
+
+    sess.say, sess.llm = say, llm
+    yield sess
+    sess.close()
+
+
+def _practices(sess, word):
+    return sess.store.get(word)["practices"]
+
+
+class TestSpokenTurns:
+    def test_the_page_is_told_who_spoke(self, household):
+        ws = household.say("hello", 2)
+        shown = [m for m in ws.sent if m["type"] == "user_text"]
+        assert shown == [{"type": "user_text", "text": "hello", "speaker": "dad"}]
+
+    def test_a_child_turn_is_unchanged(self, household):
+        word = sorted(household.vocab)[0]
+        household.say(word, 1)
+        assert household.history[0] == {"role": "user", "content": word}
+        assert _practices(household, word) == 1
+        assert household.turn_count == 1
+        sent = household.llm.prompts[-1][-1]["content"]
+        assert sent.endswith(word) and not sent.startswith(main.PARENT_PREFIX)
+
+    def test_a_parent_turn_is_marked_and_has_no_plan(self, household):
+        household.say("please help her", 3)
+        last = household.llm.prompts[-1][-1]
+        assert last == {"role": "user",
+                        "content": main.PARENT_PREFIX + "please help her"}
+        assert household.history[0]["content"].startswith(main.PARENT_PREFIX)
+
+    def test_a_parent_turn_is_not_the_childs_practice(self, household):
+        word = sorted(household.vocab)[0]
+        household.say(word, 2)
+        assert _practices(household, word) == 0
+        assert household.turn_count == 0
+
+    def test_a_parent_turn_is_logged_with_who_spoke(self, household):
+        household.say("hello", 3)
+        row = household.store.db.execute(
+            "SELECT speaker FROM turns ORDER BY id DESC LIMIT 1").fetchone()
+        assert row["speaker"] == "mom"
+
+    def test_a_parent_cutting_in_does_not_answer_the_reading_request(self, household):
+        main.note_invitation(household, "跟我读一遍：moon！")
+        household.say("moon", 2)
+        assert household.awaiting == "moon"
+        assert household.read_tries == 0 and household.read_verdict == ""
+
+    def test_the_tutors_reply_to_a_parent_asks_for_nothing(self, household):
+        household.llm.reply = "好的，跟我读一遍：moon！"
+        household.say("hello", 2)
+        assert household.awaiting == ""
+
+    def test_the_tutor_is_told_what_the_prefix_means(self, household):
+        household.say("hello", 2)
+        assert main.PARENT_PREFIX in household.llm.prompts[-1][0]["content"]
+
+    def test_an_unclear_voice_is_treated_as_the_child(self, household):
+        word = sorted(household.vocab)[0]
+        ws = household.say(word, 5)
+        shown = [m for m in ws.sent if m["type"] == "user_text"]
+        assert shown[0]["speaker"] is None
+        assert _practices(household, word) == 1
+
+    def test_a_failing_voiceprint_does_not_cost_the_turn(self, household, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("model fell over")
+        monkeypatch.setattr(household.speakers, "identify", boom)
+        ws = household.say("hello", 2)
+        assert [m["speaker"] for m in ws.sent if m["type"] == "user_text"] == [None]
+        assert not [m for m in ws.sent if m["type"] == "error"]
+
+    def test_before_enrollment_nothing_changes(self, household):
+        household.speakers.clear("dad")
+        household.speakers.clear("mom")
+        ws = household.say("hello", 2)
+        assert [m["speaker"] for m in ws.sent if m["type"] == "user_text"] == [None]
+        assert main.PARENT_PREFIX not in household.llm.prompts[-1][0]["content"]
+
+
+class TestSpeakerInStorage:
+    def test_portrait_and_counts_ignore_parents(self, tmp_path):
+        from orchestrator.teaching.store import Store
+        store = Store("t", tmp_path)
+        sid = store.start_session("kid")
+        store.log_turn(sid, "cat", "猫。", [], speaker="child")
+        store.log_turn(sid, "hi", "你好。", [])
+        store.log_turn(sid, "ask", "答。", [], speaker="dad")
+        assert [t["learner_text"] for t in store.session_turns(sid)] == ["cat", "hi"]
+        turns = store.db.execute(
+            "SELECT turns FROM sessions WHERE id = ?", (sid,)).fetchone()["turns"]
+        assert turns == 2
+        store.close()
+
+    def test_an_old_turns_table_gains_the_speaker_column(self, tmp_path):
+        import sqlite3
+        from orchestrator.teaching.store import Store
+        path = tmp_path / "learners" / "old" / "state.sqlite"
+        path.parent.mkdir(parents=True)
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                   "session INTEGER NOT NULL, ts TEXT NOT NULL, learner_text TEXT, "
+                   "tutor_text TEXT, items TEXT, "
+                   "interrupted INTEGER NOT NULL DEFAULT 0)")
+        db.execute("INSERT INTO turns(session, ts, learner_text) VALUES (1, 'x', 'hi')")
+        db.commit()
+        db.close()
+        store = Store("old", tmp_path)
+        row = store.db.execute("SELECT learner_text, speaker FROM turns").fetchone()
+        assert (row["learner_text"], row["speaker"]) == ("hi", None)
+        store.close()
+
+
+class TestTranscriptLine:
+    def test_each_voice_is_named(self):
+        line = main.transcript_line
+        assert line({"role": "user", "content": "cat"}) == "孩子：cat"
+        assert line({"role": "user",
+                     "content": main.PARENT_PREFIX + "hi"}) == "家长：hi"
+        assert line({"role": "assistant", "content": "好"}) == "老师：好"

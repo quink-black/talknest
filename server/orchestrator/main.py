@@ -136,6 +136,17 @@ TEACHING_RULES = (
     "child's own topic or ask what they would like to talk about."
 )
 
+# Marks a parent's turn in the conversation. The prefix is part of the
+# message text, so it stays in history byte for byte and the cached prompt
+# prefix keeps matching from one turn to the next.
+PARENT_PREFIX = "【家长】"
+SPEAKER_RULES = (
+    "A message that starts with 【家长】 is a parent speaking, not the child, "
+    "and it carries no teaching plan. Answer the parent briefly and "
+    "politely, in the language they used, then hand the conversation back "
+    "to the child. Never treat it as something the child said or practised."
+)
+
 web_dir = str(pathlib.Path(__file__).resolve().parent.parent.parent / "web")
 # Mounted after the /ws route is registered (see bottom of this file) so
 # the catch-all static mount cannot shadow it.
@@ -298,10 +309,13 @@ class Session:
             text += " " + ENGLISH_RATIO_RULE.format(pct=round(float(ratio) * 100))
         if self.units:
             text += " " + TEACHING_RULES
+        if self.speakers is not None and self.speakers.enabled():
+            text += " " + SPEAKER_RULES
         return " ".join(text.split())
 
 
 session_by_ws: dict[WebSocket, Session] = {}
+
 
 def speaker_book(learner: str) -> speaker.SpeakerBook:
     """The enrolled voices of one learner's household."""
@@ -378,13 +392,20 @@ async def queue_sentence(ws: WebSocket, queue: asyncio.Queue, marks: dict,
 
 
 def record_turn(sess: Session, learner_text: str, spoken: list[str],
-                interrupted: bool):
+                interrupted: bool, who: str | None = None):
     """Bookkeeping for one turn, including one the child cut short.
 
     What counts as taught is what reached the TTS queue: a sentence that
     was cut off after the child heard it still came up.
+
+    A parent's turn is only logged: what a parent says is not the child
+    producing English, and what the tutor answers is not a lesson.
     """
     if sess.store is None or sess.session_id is None:
+        return
+    if who in speaker.PARENTS:
+        sess.store.log_turn(sess.session_id, learner_text, " ".join(spoken),
+                            [], interrupted, speaker=who)
         return
     sess.turn_count += 1
     said = " ".join(spoken)
@@ -402,7 +423,8 @@ def record_turn(sess: Session, learner_text: str, spoken: list[str],
     sess.store.practice(heard, sess.session_id)
     keep_topic_words(sess, said, learner_text, sess.vocab | set(topic))
     sess.store.log_turn(sess.session_id, learner_text, " ".join(spoken),
-                        sorted(set(taught) | set(heard)), interrupted)
+                        sorted(set(taught) | set(heard)), interrupted,
+                        speaker=who)
 
 
 def keep_topic_words(sess: Session, said: str, learner_text: str,
@@ -435,6 +457,16 @@ COMPACT_PROMPT = """下面是英语陪练对话里最早的一段，以及之前
 """
 
 
+def transcript_line(message: dict) -> str:
+    """One history message as a line of the transcript to summarise."""
+    if message["role"] != "user":
+        return f"老师：{message['content']}"
+    text = message["content"]
+    if text.startswith(PARENT_PREFIX):
+        return f"家长：{text.removeprefix(PARENT_PREFIX)}"
+    return f"孩子：{text}"
+
+
 async def compact_history(sess: Session):
     """Fold the oldest turns into the rolling summary.
 
@@ -445,9 +477,7 @@ async def compact_history(sess: Session):
     if overflow < COMPACT_MESSAGES:
         return
     oldest = sess.history[: overflow]
-    transcript = "\n".join(
-        f"{'孩子' if m['role'] == 'user' else '老师'}：{m['content']}"
-        for m in oldest)
+    transcript = "\n".join(transcript_line(m) for m in oldest)
     prompt = COMPACT_PROMPT.format(previous=sess.summary or "（无）",
                                    transcript=transcript)
     try:
@@ -508,7 +538,8 @@ def note_invitation(sess: Session, reply: str) -> None:
     sess.read_target, sess.read_verdict = "", ""
 
 
-def build_messages(sess: Session, text: str) -> list[dict]:
+def build_messages(sess: Session, text: str,
+                   who: str | None = None) -> list[dict]:
     """Prompt for one turn: stable rules, then history, then the plan.
 
     The plan rides along with the child's own words and is never written to
@@ -516,6 +547,13 @@ def build_messages(sess: Session, text: str) -> list[dict]:
     to reuse the cached prefix, and a stack of stale plans would tell the
     tutor to re-teach what it just taught.
     """
+    if who in speaker.PARENTS:
+        # No plan for a parent: the plan is for the child's next turn, and
+        # an empty one keeps this turn from crediting any word as taught.
+        sess.plan = state_block.Plan()
+        return ([{"role": "system", "content": sess.system_prompt()}]
+                + sess.history[-HISTORY_MESSAGES:]
+                + [{"role": "user", "content": PARENT_PREFIX + text}])
     plan = state_block.Plan()
     if sess.store is not None and sess.units:
         plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS, sess.portrait,
@@ -535,6 +573,28 @@ def build_messages(sess: Session, text: str) -> list[dict]:
     return messages
 
 
+async def hear(sess: Session, pcm24: np.ndarray) -> tuple[str, str | None]:
+    """Transcribe an utterance and, when voices are enrolled, say who spoke.
+
+    The voiceprint runs beside the ASR request, so its CPU time hides
+    behind the wait for the ASR service.
+    """
+    transcript = asr.transcribe(pcm24, sr=CLIENT_SR)
+    book = sess.speakers
+    if book is None or not book.enabled():
+        return await transcript, None
+
+    def identify() -> str | None:
+        try:
+            return book.identify(pcm24, CLIENT_SR).role
+        except Exception as e:  # an unknown voice must not cost the turn
+            log.warning("speaker identification failed: %s", e)
+            return None
+
+    text, who = await asyncio.gather(transcript, asyncio.to_thread(identify))
+    return text, who
+
+
 async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
                            cancel: asyncio.Event):
     t0 = time.perf_counter()
@@ -542,17 +602,19 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
     queue: asyncio.Queue = asyncio.Queue()
     spoken: list[str] = []
     user_text = ""
+    who: str | None = None
     worker = asyncio.create_task(tts_worker(ws, sess, queue, marks, t0, cancel))
     try:
-        text = await asr.transcribe(pcm24, sr=CLIENT_SR)
+        text, who = await hear(sess, pcm24)
         marks["asr_done"] = now_ms(t0)
         if not text:
             await send_json(ws, {"type": "error", "message": "empty transcription"})
             return
         user_text = text
-        await send_json(ws, {"type": "user_text", "text": text})
+        await send_json(ws, {"type": "user_text", "text": text,
+                             "speaker": who})
 
-        messages = build_messages(sess, text)
+        messages = build_messages(sess, text, who)
 
         await send_json(ws, {"type": "state", "value": "thinking"})
         reply_parts, sent_start = [], 0
@@ -594,9 +656,12 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         await worker
 
         if reply:
-            sess.history.append({"role": "user", "content": text})
+            parent = who in speaker.PARENTS
+            sess.history.append({"role": "user",
+                                 "content": PARENT_PREFIX + text if parent else text})
             sess.history.append({"role": "assistant", "content": reply})
-            note_invitation(sess, reply)
+            if not parent:
+                note_invitation(sess, reply)
         await send_json(ws, {"type": "reply_done", "marks": marks})
     except Exception as e:  # keep the socket alive; surface the error
         queue.put_nowait(None)
@@ -607,7 +672,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
     finally:
         worker.cancel()
         if user_text:
-            record_turn(sess, user_text, spoken, cancel.is_set())
+            record_turn(sess, user_text, spoken, cancel.is_set(), who)
             if (TEACHING and not sess.compacting
                     and len(sess.history) - HISTORY_MESSAGES >= COMPACT_MESSAGES):
                 sess.compacting = True

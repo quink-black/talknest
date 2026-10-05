@@ -251,7 +251,7 @@ async function onMessage(ev) {
       if (streaming) setStatus(msg.value, msg.value !== "listening");
       break;
     case "user_text":
-      addBubble("user", msg.text);
+      addBubble("user", msg.text, msg.speaker);
       // Text takes a moment to arrive while audio takes longer still, so
       // the empty bubble has to look alive or the page reads as broken.
       replyBubble = addBubble("reply", "");
@@ -303,10 +303,17 @@ async function onMessage(ev) {
   }
 }
 
-function addBubble(kind, text) {
+function addBubble(kind, text, who) {
   const div = document.createElement("div");
   div.className = "bubble " + kind;
-  div.textContent = text;
+  if (who && ROLE_LABEL[who]) {
+    div.classList.add(who);
+    const tag = document.createElement("span");
+    tag.className = "who";
+    tag.textContent = ROLE_LABEL[who];
+    div.appendChild(tag);
+  }
+  div.appendChild(document.createTextNode(text));
   $("transcript").appendChild(div);
   scrollTranscript();
   return div;
