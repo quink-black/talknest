@@ -78,6 +78,23 @@ vad:
   # child waiting for an answer says "喂?" and must not lose the answer.
   pending_barge_in_ms: 1200
 
+# Who is talking: child, dad or mom, told apart by voiceprint. Each family
+# member enrolls a few clips from the page; matching starts once the child
+# and at least one parent are enrolled. The model runs on the CPU. Without
+# the weights in <model root>/speaker/ the feature stays off.
+speaker_id:
+  enabled: true
+  model: 3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx
+  threads: 2
+  # Cosine similarity of an utterance to the closest enrolled voice. Below
+  # min_score, or closer than margin to the runner-up, the speaker is
+  # reported as unknown and treated as the child.
+  min_score: 0.45
+  margin: 0.05
+  min_seconds: 1.0         # voiced speech needed to attempt a match
+  enroll_min_seconds: 3.0  # voiced speech needed to accept an enrolled clip
+  max_enroll_seconds: 20.0
+
 # Teaching state: curriculum units, per-learner progress and the per-turn
 # plan block.
 teaching:

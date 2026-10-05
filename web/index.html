@@ -37,6 +37,15 @@
             background: #fff; padding: .6rem .8rem; }
   #parent summary { cursor: pointer; font-size: .95rem; color: #555; }
   .prow { display: flex; align-items: center; gap: .6rem; margin-top: .6rem; }
+  #voiceprint { margin: .6rem 0 1rem; border: 1px solid #e2e0da; border-radius: 10px;
+                background: #fff; padding: .6rem .8rem; }
+  #voiceprint summary { cursor: pointer; font-size: .95rem; color: #555; }
+  .vprow { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; }
+  .vpname { flex: 0 0 3.2em; font-size: .95rem; }
+  .vpinfo { flex: 1 1 auto; min-width: 0; }
+  .vprow button { font-size: .8rem; padding: .25rem .6rem; }
+  .vprow button:disabled { opacity: .5; cursor: default; }
+  #vpMessage { min-height: 1.3em; margin: .6rem 0 0; }
   #words table { width: 100%; margin-top: .6rem; }
   #words th, #words td { text-align: left; }
   #words td:last-child { text-align: right; white-space: nowrap; }
@@ -185,6 +194,27 @@
       <p class="hint">选了单元就只教这个单元的新词（想重复练或跳过都可以），不选
       则按大纲顺序自动往下走。“已会”“重学”是你下的判断，之后自动记录不再改动
       这个词；“自动”把它交回系统。切换“我是谁”或模式会清空当前对话。</p>
+    </details>
+
+    <details id="voiceprint">
+      <summary>声纹录入</summary>
+      <p class="hint" id="vpState"></p>
+      <div class="vprow" data-role="child">
+        <span class="vpname">孩子</span><span class="vpinfo hint">未录入</span>
+        <button class="vpRec">录一段</button><button class="vpClear" disabled>清除</button>
+      </div>
+      <div class="vprow" data-role="dad">
+        <span class="vpname">爸爸</span><span class="vpinfo hint">未录入</span>
+        <button class="vpRec">录一段</button><button class="vpClear" disabled>清除</button>
+      </div>
+      <div class="vprow" data-role="mom">
+        <span class="vpname">妈妈</span><span class="vpinfo hint">未录入</span>
+        <button class="vpRec">录一段</button><button class="vpClear" disabled>清除</button>
+      </div>
+      <p class="hint" id="vpMessage"></p>
+      <p class="hint">每个人在安静的地方录两三段，每段说话约 8 秒，累计 15 秒以上
+      识别会更稳。录音期间对话暂时听不到你的声音。录音不会保存，服务端只留下声纹
+      特征。声纹跟着“我是谁”走，切换后需要各自录入。</p>
     </details>
 
     <div class="devices">

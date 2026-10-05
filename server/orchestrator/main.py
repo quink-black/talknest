@@ -20,7 +20,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
@@ -28,6 +28,7 @@ from starlette.websockets import WebSocketState
 from .asr import ASRClient, DEFAULT_LANGUAGES
 from .config import data_root, load
 from .llm import LLMClient
+from . import speaker
 from .teaching import (curriculum, digest, match, profile, readback,
                        scheduler, state_block)
 from .teaching.store import MASTERY_BOX, Store
@@ -78,6 +79,8 @@ PENDING_BARGE_IN_MS = VAD_CFG.get("pending_barge_in_ms", 1200)
 DEFAULT_MODE = cfg.get("default_mode", "")
 if DEFAULT_MODE not in cfg["modes"]:
     DEFAULT_MODE = next(iter(cfg["modes"]))
+
+SPEAKER_CFG = cfg.get("speaker_id", {})
 
 TEACHING_CFG = cfg.get("teaching", {})
 TEACHING = bool(TEACHING_CFG.get("enabled"))
@@ -242,6 +245,7 @@ class Session:
         self.read_target = ""      # what the last judged turn was judged on
         self.read_verdict = ""
         self.nudge_task: asyncio.Task | None = None
+        self.speakers: speaker.SpeakerBook | None = None
         if TEACHING:
             self.open_learner(DEFAULT_LEARNER)
 
@@ -253,6 +257,7 @@ class Session:
         self.history.clear()
         self.store = Store(learner, data_root())
         self.portrait = profile.load(profile.path_for(data_root(), learner))
+        self.speakers = speaker_book(learner)
         self.load_curriculum()
 
     def load_curriculum(self):
@@ -297,6 +302,12 @@ class Session:
 
 
 session_by_ws: dict[WebSocket, Session] = {}
+
+def speaker_book(learner: str) -> speaker.SpeakerBook:
+    """The enrolled voices of one learner's household."""
+    embedder, trimmer = speaker.shared_models(SPEAKER_CFG)
+    path = data_root() / "learners" / learner / "speakers.json"
+    return speaker.SpeakerBook(path, embedder, trimmer, SPEAKER_CFG)
 
 
 def tts_params(sess: Session) -> dict:
@@ -915,6 +926,63 @@ async def get_units(learner: str, mode: str = ""):
         "units": [{"id": u.id, "title": u.title, "words": len(u.words),
                    "left": left[u.id]} for u in units],
     }
+
+
+# Longest enrollment clip accepted, in bytes of 24 kHz int16 PCM. Checked
+# before decoding so an oversized upload cannot be buffered into numpy.
+ENROLL_MAX_BYTES = int(
+    float(SPEAKER_CFG.get("max_enroll_seconds", 20.0)) * CLIENT_SR * 2) + 4096
+
+
+@app.get("/learners/{learner}/speakers")
+async def get_speakers(learner: str):
+    """What the voiceprint panel shows: clips enrolled per family member."""
+    return speaker_book(slug(learner)).status()
+
+
+@app.post("/learners/{learner}/speakers/{role}")
+async def enroll_speaker(learner: str, role: str, request: Request):
+    """Add one recording to a family member's voiceprint.
+
+    The body is raw mono int16 PCM at the client rate, exactly what the
+    page's microphone worklet produces.
+    """
+    if role not in speaker.ROLES:
+        return JSONResponse({"error": "unknown role"}, status_code=404)
+    body = await request.body()
+    if len(body) % 2:
+        return JSONResponse({"error": "PCM must be 16-bit samples"},
+                            status_code=400)
+    if len(body) > ENROLL_MAX_BYTES:
+        return JSONResponse({"error": "录音太长"}, status_code=400)
+    name = slug(learner)
+    book = speaker_book(name)
+    pcm = np.frombuffer(body, dtype="<i2")
+    try:
+        # Embedding runs on the CPU for a second or so: off the event loop.
+        seconds = await asyncio.to_thread(book.enroll, role, pcm, CLIENT_SR)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    reload_speakers(name)
+    return {"seconds": round(seconds, 1), **book.status()}
+
+
+@app.delete("/learners/{learner}/speakers/{role}")
+async def clear_speaker(learner: str, role: str):
+    if role not in speaker.ROLES:
+        return JSONResponse({"error": "unknown role"}, status_code=404)
+    name = slug(learner)
+    book = speaker_book(name)
+    book.clear(role)
+    reload_speakers(name)
+    return book.status()
+
+
+def reload_speakers(learner: str) -> None:
+    """Make open conversations of this learner see a changed voiceprint."""
+    for sess in session_by_ws.values():
+        if sess.learner == learner and sess.speakers is not None:
+            sess.speakers.reload()
 
 
 # Catch-all static mount must come last: routes registered before it win.

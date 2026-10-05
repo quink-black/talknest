@@ -27,6 +27,7 @@ let recheckTimer = null, checking = false, starting = false;
 let playNextAt = 0, sources = [];
 let playbackActive = false, audioEnded = false, playSr = CLIENT_SR;
 let replyBubble = null;
+let enrolling = null;      // the voiceprint recording in progress, if any
 
 /* Teacher avatar: decorative, so it is driven entirely from state the page
    already has -- never from anything the server would have to add. */
@@ -686,6 +687,9 @@ async function startMic() {
   if (!worklet) {
     worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
     worklet.port.onmessage = (e) => {
+      // A voiceprint recording keeps the voice off the socket, or the
+      // tutor would answer the person who is enrolling.
+      if (enrolling) { collectEnroll(e.data); return; }
       if (streaming && ws && ws.readyState === 1) ws.send(e.data);
     };
     micSource = audioCtx.createMediaStreamSource(micStream);
@@ -783,7 +787,8 @@ function pauseSession() {
 
 /* ---- playback ---- */
 function playChunk(buf) {
-  if (!audioCtx) return;
+  // A late reply would be picked up by the mic and end up in the voiceprint.
+  if (!audioCtx || enrolling) return;
   const pcm = new Int16Array(buf);
   // The browser resamples a buffer whose rate differs from the context.
   const audioBuf = audioCtx.createBuffer(1, pcm.length, playSr);
@@ -857,7 +862,9 @@ $("learner").addEventListener("change", (e) => {
   savePref(PREF_KEY.learner, e.target.value);
   clearTranscript();
   send({ type: "learner", value: e.target.value });
+  cancelEnroll();
   refreshParent();
+  loadSpeakers();
 });
 
 $("unit").addEventListener("change", (e) => {
@@ -979,6 +986,141 @@ async function loadUnits() {
   } catch (e) { /* offline or old server: keep whatever is there */ }
 }
 
+/* ---- voiceprint enrollment ----
+   Each family member records a few clips; the server keeps only the
+   voiceprint. Recording reuses the capture worklet, so the clip is exactly
+   what the server's VAD would otherwise have heard. */
+const ROLE_LABEL = { child: "孩子", dad: "爸爸", mom: "妈妈" };
+const VP_MAX_MS = 8000;       // a clip stops by itself after this long
+const VP_GOAL_S = 15;         // enough voice for a stable voiceprint
+const VP_PROMPT = "请像平时一样说话，比如：“Hello! 今天天气真好，我想吃苹果，"
+  + "还想玩一会儿积木。”";
+
+function vpMessage(text) { $("vpMessage").textContent = text; }
+
+function vpRow(role) { return document.querySelector(`.vprow[data-role="${role}"]`); }
+
+function renderSpeakers(status) {
+  for (const role of Object.keys(ROLE_LABEL)) {
+    const row = vpRow(role);
+    const info = status.roles[role];
+    const recording = enrolling && enrolling.role === role;
+    let text = "未录入";
+    if (info.samples) {
+      text = `${info.samples} 段，共 ${info.seconds} 秒`
+        + (info.seconds >= VP_GOAL_S ? "，已录入" : "，建议再录一段");
+    }
+    row.querySelector(".vpinfo").textContent = text;
+    const rec = row.querySelector(".vpRec");
+    rec.textContent = recording ? "停止" : "录一段";
+    rec.disabled = !status.ready || (!!enrolling && !recording);
+    row.querySelector(".vpClear").disabled = !!enrolling || !info.samples;
+  }
+  $("vpState").textContent = !status.ready
+    ? "服务端没有声纹模型，无法录入"
+    : status.enabled
+      ? "识别已启用：对话里会标出是谁在说话"
+      : "孩子和至少一位家长都录入后才会启用识别";
+}
+
+async function loadSpeakers() {
+  const learner = $("learner").value;
+  if (!learner) return;
+  try {
+    const r = await fetch(`learners/${encodeURIComponent(learner)}/speakers`);
+    if (!r.ok) return;
+    lastSpeakers = await r.json();
+    renderSpeakers(lastSpeakers);
+  } catch (e) { /* offline or old server: leave the panel as it is */ }
+}
+let lastSpeakers = null;
+
+async function startEnroll(role) {
+  if (enrolling) return;
+  let ready = false;
+  try { ready = await startMic(); } catch (e) {
+    vpMessage("麦克风不可用：" + e.name);
+    return;
+  }
+  if (!ready) { vpMessage("请先点页面上的“点我开始对话”，允许使用麦克风"); return; }
+  // The mic hears the speaker: whatever the tutor is saying has to stop.
+  if (streaming) send({ type: "interrupt" });
+  stopPlayback();
+  reportPlaybackEnded();
+  enrolling = { role, chunks: [], samples: 0, startedAt: performance.now(), timer: 0 };
+  enrolling.timer = setInterval(tickEnroll, 200);
+  vpMessage(VP_PROMPT);
+  if (lastSpeakers) renderSpeakers(lastSpeakers);
+}
+
+function collectEnroll(buf) {
+  const pcm = new Int16Array(buf);
+  enrolling.chunks.push(pcm);
+  enrolling.samples += pcm.length;
+}
+
+function tickEnroll() {
+  if (!enrolling) return;
+  const ms = performance.now() - enrolling.startedAt;
+  vpMessage(`录音中 ${(ms / 1000).toFixed(1)} / ${VP_MAX_MS / 1000} 秒。` + VP_PROMPT);
+  if (ms >= VP_MAX_MS) finishEnroll();
+}
+
+function cancelEnroll() {
+  if (!enrolling) return;
+  clearInterval(enrolling.timer);
+  enrolling = null;
+  vpMessage("");
+  if (lastSpeakers) renderSpeakers(lastSpeakers);
+}
+
+async function finishEnroll() {
+  if (!enrolling) return;
+  const { role, chunks, samples, timer } = enrolling;
+  clearInterval(timer);
+  enrolling = null;
+  const pcm = new Int16Array(samples);
+  let at = 0;
+  for (const c of chunks) { pcm.set(c, at); at += c.length; }
+  vpMessage("正在处理录音…");
+  if (lastSpeakers) renderSpeakers(lastSpeakers);
+  const learner = $("learner").value;
+  try {
+    const r = await fetch(
+      `learners/${encodeURIComponent(learner)}/speakers/${role}`,
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" },
+        body: pcm.buffer });
+    const data = await r.json();
+    if (!r.ok) { vpMessage(data.error || "录入失败"); return; }
+    vpMessage(`${ROLE_LABEL[role]}：这段有效语音 ${data.seconds} 秒，已保存`);
+    lastSpeakers = data;
+  } catch (e) {
+    vpMessage("录入失败：网络或服务端错误");
+  } finally {
+    if (lastSpeakers) renderSpeakers(lastSpeakers);
+    loadSpeakers();
+  }
+}
+
+async function clearSpeaker(role) {
+  const learner = $("learner").value;
+  if (!confirm(`清除${ROLE_LABEL[role]}的全部声纹？`)) return;
+  try {
+    const r = await fetch(
+      `learners/${encodeURIComponent(learner)}/speakers/${role}`, { method: "DELETE" });
+    if (r.ok) { lastSpeakers = await r.json(); renderSpeakers(lastSpeakers); vpMessage(""); }
+  } catch (e) { vpMessage("清除失败：网络或服务端错误"); }
+}
+
+for (const row of document.querySelectorAll(".vprow")) {
+  const role = row.dataset.role;
+  row.querySelector(".vpRec").addEventListener("click", () => {
+    if (enrolling && enrolling.role === role) finishEnroll();
+    else startEnroll(role);
+  });
+  row.querySelector(".vpClear").addEventListener("click", () => clearSpeaker(role));
+}
+
 /* Modes are free-form in the server config; the dropdown is built from
    GET /modes so a new age group there shows up without touching this
    page. The static options in index.html are only a fetch fallback. */
@@ -1010,7 +1152,8 @@ syncAvatar();
 scheduleYawWander();
 scheduleYawSpin();
 
-loadModes().then(loadLearners).then(loadUnits).then(loadWords).finally(connect);
+loadModes().then(loadLearners).then(loadUnits).then(loadWords)
+  .then(loadSpeakers).finally(connect);
 checkSecureContext();
 syncDeviceUi();
 scheduleRecheck(WATCHDOG_MS);  // start the periodic look
