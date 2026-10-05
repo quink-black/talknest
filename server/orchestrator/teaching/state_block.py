@@ -44,6 +44,8 @@ class Plan:
     notes: dict[str, str] = field(default_factory=dict)
     # The one thing the tutor is suggested to do this turn.
     hint: str = ""
+    # How the child did on the word they were just asked to say back.
+    reading: str = ""
 
 
 def render(plan: Plan, caps: Caps = Caps()) -> str:
@@ -54,6 +56,8 @@ def render(plan: Plan, caps: Caps = Caps()) -> str:
     said.
     """
     parts = []
+    if plan.reading:
+        parts.append("跟读: " + plan.reading)
     if plan.title:
         parts.append("单元: " + plan.title)
     if plan.pattern:

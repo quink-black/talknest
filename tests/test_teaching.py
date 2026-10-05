@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
 import asyncio
+import json
 from datetime import timedelta
 
 import pytest
@@ -17,7 +18,7 @@ from fastapi.testclient import TestClient
 from orchestrator import main
 from orchestrator.config import load
 from orchestrator.teaching import (curriculum, digest, match, profile,
-                                   scheduler, state_block)
+                                   readback, scheduler, state_block)
 from orchestrator.teaching.curriculum import CurriculumError, Unit
 from orchestrator.teaching.store import (MASTERY_BOX, Store, due_after,
                                          local_day)
@@ -498,6 +499,68 @@ class TestTeachingPoints:
         assert match.teaching_points("跟我读一遍：I！") == []
 
 
+class TestInvitation:
+    def test_the_requested_english_is_found(self):
+        assert match.invitation("月亮的英文是 moon。跟我读一遍：moon！") == "moon"
+        assert match.invitation("来，再说一次：hi！") == "hi"
+        assert match.invitation("再试一次：red！") == "red"
+        assert match.invitation("跟我读：“magic pen”！") == "magic pen"
+
+    def test_english_after_a_colon_in_a_story_is_not_a_request(self):
+        assert match.invitation("妈妈说：hello") is None
+        assert match.invitation("月亮的英文是 moon。") is None
+
+    def test_the_reply_is_cut_after_the_request(self):
+        text = "月亮的英文是 moon，就是“月亮”。跟我读一遍：moon！你吃月饼了吗？"
+        assert match.cut_after_invitation(text) == \
+            "月亮的英文是 moon，就是“月亮”。跟我读一遍：moon！"
+
+    def test_nothing_is_cut_while_the_word_is_still_arriving(self):
+        assert match.cut_after_invitation("跟我读一遍：mo") is None
+        assert match.cut_after_invitation("跟我读一遍：moon") is None
+        assert match.cut_after_invitation("跟我读一遍：moon！") == "跟我读一遍：moon！"
+
+    def test_the_closing_quote_stays_with_the_request(self):
+        assert match.cut_after_invitation("跟我读：“moon”！然后") == "跟我读：“moon”！"
+
+    def test_no_request_no_cut(self):
+        assert match.cut_after_invitation("今天天气真好。") is None
+
+    def test_said_matches_every_word_of_a_phrase(self):
+        assert match.said("Moon.", "moon")
+        assert match.said("this is a magic pen", "magic pen")
+        assert not match.said("magic", "magic pen")
+        assert match.said("apples", "apple")
+        assert not match.said("", "moon")
+
+
+class TestReadback:
+    def test_a_correct_attempt(self):
+        v = readback.judge("moon", "Moon.", 0)
+        assert (v.kind, v.failed) == ("ok", False)
+        assert "具体" in v.hint
+
+    def test_a_wrong_word_is_a_miss_with_a_retry(self):
+        v = readback.judge("moon", "Mon.", 0)
+        assert (v.kind, v.failed) == ("retry", True)
+        assert "Mon" in v.line
+
+    def test_a_short_chinese_turn_is_taken_as_unclear(self):
+        v = readback.judge("moon", "木", 0)
+        assert (v.kind, v.failed) == ("unclear", True)
+
+    def test_something_else_is_not_a_miss(self):
+        v = readback.judge("moon", "我今天去了动物园玩得很开心", 0)
+        assert (v.kind, v.failed) == ("other", False)
+
+    def test_the_second_miss_gives_the_word_up(self):
+        assert readback.judge("moon", "Mon.", 1).kind == "giveup"
+        assert readback.judge("moon", "木", 1).kind == "giveup"
+
+    def test_a_good_attempt_after_a_miss_still_counts(self):
+        assert readback.judge("moon", "moon", 1).kind == "ok"
+
+
 class TestScheduler:
     def test_without_a_pick_the_first_unfinished_unit_wins(self, store):
         assert scheduler.current_unit(store, UNITS).id == "colors"
@@ -713,6 +776,182 @@ class TestRecordTurn:
         session.history.append({"role": "user", "content": "你好"})
         later = main.build_messages(session, "嗯")[-1]["content"]
         assert "话题:" not in later
+
+
+class TestReadBack:
+    def test_a_request_to_repeat_is_remembered(self, session):
+        main.note_invitation(session, "月亮的英文是 moon。跟我读一遍：moon！")
+        assert session.awaiting == "moon"
+
+    def test_the_next_turn_carries_the_verdict(self, session):
+        main.note_invitation(session, "跟我读一遍：moon！")
+        block = main.build_messages(session, "Moon.")[-1]["content"]
+        assert "跟读: moon → 读对了" in block
+        assert "不要只说“真棒”" in block
+
+    def test_a_feedback_turn_sets_the_plan_words_aside(self, session):
+        session.turn_count = scheduler.PLAN_EVERY - 1      # a plan turn
+        main.note_invitation(session, "跟我读一遍：moon！")
+        main.build_messages(session, "Moon.")
+        assert session.plan.new == [] and session.plan.review == []
+
+    def test_a_miss_is_counted_and_a_second_request_keeps_the_count(self, session):
+        main.note_invitation(session, "跟我读一遍：moon！")
+        main.build_messages(session, "Mon.")
+        assert session.read_tries == 1
+        main.note_invitation(session, "再读一遍：moon！")
+        assert session.awaiting == "moon" and session.read_tries == 1
+        block = main.build_messages(session, "Mon.")[-1]["content"]
+        assert "还没读准" in block
+
+    def test_a_new_word_starts_the_count_again(self, session):
+        main.note_invitation(session, "跟我读一遍：moon！")
+        main.build_messages(session, "Mon.")
+        main.note_invitation(session, "跟我读一遍：sun！")
+        assert session.read_tries == 0
+
+    def test_a_reply_without_a_request_closes_the_exchange(self, session):
+        main.note_invitation(session, "跟我读一遍：moon！")
+        main.build_messages(session, "Moon.")
+        main.note_invitation(session, "读得很清楚。你今晚会看月亮吗？")
+        assert session.awaiting == ""
+
+    def test_without_a_request_the_block_has_no_verdict(self, session):
+        assert "跟读" not in main.build_messages(session, "你好")[-1]["content"]
+
+
+class _FakeWS:
+    client_state = main.WebSocketState.CONNECTED
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_text(self, text):
+        self.sent.append(json.loads(text))
+
+    async def send_bytes(self, data):
+        pass
+
+
+class _FakeTTS:
+    spoken = []
+
+    async def pcm_chunks(self, text, **kw):
+        self.spoken.append(text)
+        return
+        yield
+
+
+class _ChunkedLLM:
+    def __init__(self, reply, size=3):
+        self.chunks = [reply[i:i + size] for i in range(0, len(reply), size)]
+
+    async def stream_chat(self, messages, cancel=None, max_tokens=None):
+        for chunk in self.chunks:
+            yield chunk
+
+
+class _FakeASR:
+    def __init__(self, text):
+        self.text = text
+
+    async def transcribe(self, pcm, sr=None):
+        return self.text
+
+
+class TestFloor:
+    def _run(self, session, monkeypatch, reply, heard="你好"):
+        ws = _FakeWS()
+        tts = _FakeTTS()
+        tts.spoken = []
+        monkeypatch.setattr(main, "llm", _ChunkedLLM(reply))
+        monkeypatch.setattr(main, "asr", _FakeASR(heard))
+        monkeypatch.setattr(main, "tts", tts)
+        asyncio.run(main.handle_utterance(ws, session, None, asyncio.Event()))
+        return ws, tts
+
+    def test_nothing_is_said_after_the_request_to_repeat(self, session, monkeypatch):
+        reply = ("月亮的英文是 moon，就是“月亮”。跟我读一遍：moon！"
+                 "你今晚会看月亮吗？我们再来聊聊月饼吧。")
+        ws, tts = self._run(session, monkeypatch, reply)
+        assert "".join(tts.spoken).endswith("moon！")
+        assert "月饼" not in "".join(tts.spoken)
+        shown = "".join(m["text"] for m in ws.sent if m["type"] == "reply_delta")
+        assert shown.endswith("moon！") and "月饼" not in shown
+        assert session.history[-1]["content"].endswith("moon！")
+        assert session.awaiting == "moon"
+
+    def test_a_reply_without_a_request_is_spoken_whole(self, session, monkeypatch):
+        reply = "中秋节真热闹。你们家今晚吃月饼了吗？"
+        ws, tts = self._run(session, monkeypatch, reply)
+        assert "".join(tts.spoken) == reply
+        assert session.awaiting == ""
+
+    def test_the_log_keeps_only_what_was_said(self, session, monkeypatch):
+        reply = "猫的英文是 cat。跟我读一遍：cat！然后再聊聊狗 dog。"
+        self._run(session, monkeypatch, reply)
+        row = session.store.db.execute(
+            "SELECT tutor_text FROM turns ORDER BY id DESC LIMIT 1").fetchone()
+        assert "dog" not in row["tutor_text"]
+
+
+class TestSilencePrompt:
+    def test_prompts_once_when_the_child_stays_silent(self, session, monkeypatch):
+        monkeypatch.setattr(main, "READ_WAIT_S", 0.01)
+        tts = _FakeTTS()
+        tts.spoken = []
+        monkeypatch.setattr(main, "tts", tts)
+        ws = _FakeWS()
+        session.streaming = True
+        main.note_invitation(session, "跟我读一遍：moon！")
+
+        async def go():
+            main.schedule_nudge(ws, session)
+            await asyncio.sleep(0.1)
+            main.schedule_nudge(ws, session)      # the prompt's own playback end
+            await asyncio.sleep(0.1)
+
+        asyncio.run(go())
+        nudges = [m for m in ws.sent if m["type"] == "nudge"]
+        assert len(nudges) == 1 and "moon" in nudges[0]["text"]
+        assert session.awaiting == "moon"          # still waiting for the child
+
+    def test_no_prompt_when_the_child_is_speaking(self, session, monkeypatch):
+        monkeypatch.setattr(main, "READ_WAIT_S", 0.01)
+        ws = _FakeWS()
+        session.streaming = True
+        main.note_invitation(session, "跟我读一遍：moon！")
+        session.svad.active = True
+
+        async def go():
+            main.schedule_nudge(ws, session)
+            await asyncio.sleep(0.1)
+
+        asyncio.run(go())
+        assert not [m for m in ws.sent if m["type"] == "nudge"]
+
+    def test_no_prompt_when_nothing_was_asked(self, session, monkeypatch):
+        monkeypatch.setattr(main, "READ_WAIT_S", 0.01)
+        ws = _FakeWS()
+        session.streaming = True
+
+        async def go():
+            main.schedule_nudge(ws, session)
+            await asyncio.sleep(0.1)
+
+        asyncio.run(go())
+        assert not ws.sent
+
+    def test_zero_turns_the_prompt_off(self, session, monkeypatch):
+        monkeypatch.setattr(main, "READ_WAIT_S", 0)
+        session.streaming = True
+        main.note_invitation(session, "跟我读一遍：moon！")
+
+        async def go():
+            main.schedule_nudge(_FakeWS(), session)
+            return session.nudge_task
+
+        assert asyncio.run(go()) is None
 
 
 class TestTurnAlternation:

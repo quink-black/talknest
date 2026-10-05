@@ -28,7 +28,8 @@ from starlette.websockets import WebSocketState
 from .asr import ASRClient, DEFAULT_LANGUAGES
 from .config import data_root, load
 from .llm import LLMClient
-from .teaching import curriculum, digest, match, profile, scheduler, state_block
+from .teaching import (curriculum, digest, match, profile, readback,
+                       scheduler, state_block)
 from .teaching.store import MASTERY_BOX, Store
 from .tts import TTSError, TTSClient
 from .vad import SileroVAD, StreamVAD
@@ -86,6 +87,15 @@ BLOCK_CAPS = state_block.Caps(**TEACHING_CFG.get("block", {}))
 DIGEST_MODE = str(TEACHING_CFG.get("digest", "off"))
 COMPACT_MESSAGES = int(TEACHING_CFG.get("compact_messages", 8))
 NEW_PER_DAY = int(TEACHING_CFG.get("new_per_day", 5))
+# Seconds of silence after a request to repeat before the tutor gently
+# prompts once. 0 turns the prompt off.
+READ_WAIT_S = float(TEACHING_CFG.get("read_wait_seconds", 8))
+# Said once when the child has not answered a request to repeat. The word is
+# repeated so the child need not remember it; the line is not a new lesson.
+NUDGE_LINES = (
+    "不着急，准备好了就跟我读：{w}。",
+    "慢慢来，我再说一遍：{w}。你来试试？",
+)
 # Topic words kept from one reply: the tutor is meant to teach one point a
 # turn, so more than this is a misparse, not a lesson.
 TOPIC_WORDS_PER_TURN = 2
@@ -116,7 +126,9 @@ TEACHING_RULES = (
     "Words under 复习 are due for another look: bring them back inside "
     "the conversation instead of drilling them. 单元, 句型 and 话题 name "
     "the lesson's theme, a sentence frame and conversation starters, and "
-    "本轮 is the one thing suggested for this turn. When the block lists "
+    "本轮 is the one thing suggested for this turn. 跟读 states how the "
+    "child did on the word you just asked them to say back; answer that "
+    "first. When the block lists "
     "no new words, there is nothing to introduce: carry on with the "
     "child's own topic or ask what they would like to talk about."
 )
@@ -221,6 +233,15 @@ class Session:
         # Child turns so far in this conversation, which the plan uses to
         # alternate following the child's topic with working in plan words.
         self.turn_count = 0
+        # The English the tutor last asked the child to repeat, how many
+        # times they have missed it, and whether the silence prompt was
+        # already used for it.
+        self.awaiting = ""
+        self.read_tries = 0
+        self.nudged = False
+        self.read_target = ""      # what the last judged turn was judged on
+        self.read_verdict = ""
+        self.nudge_task: asyncio.Task | None = None
         if TEACHING:
             self.open_learner(DEFAULT_LEARNER)
 
@@ -252,6 +273,7 @@ class Session:
         self.store.demote_stale()
         self.session_id = self.store.start_session(self.mode)
         self.turn_count = 0
+        self.awaiting, self.read_tries, self.nudged = "", 0, False
 
     def close(self):
         """End the session row and release the store."""
@@ -445,6 +467,36 @@ async def write_portrait(sess: Session):
         log.warning("portrait update failed for %s: %s", sess.learner, e)
 
 
+def judge_reading(sess: Session, plan: state_block.Plan,
+                  heard: str) -> state_block.Plan:
+    """Turn the child's answer to "跟我读" into feedback for this reply.
+
+    The turn is a feedback turn: the plan's new and review words are set
+    aside so the reply answers the attempt instead of starting something
+    else.
+    """
+    verdict = readback.judge(sess.awaiting, heard, sess.read_tries)
+    sess.read_tries = sess.read_tries + 1 if verdict.failed else 0
+    sess.read_target = sess.awaiting
+    sess.read_verdict = verdict.kind
+    return replace(plan, new=[], review=[], pattern="", topics=[],
+                   reading=verdict.line, hint=verdict.hint)
+
+
+def note_invitation(sess: Session, reply: str) -> None:
+    """Remember what the reply asked the child to say, if anything.
+
+    Called once a reply is complete. A request to repeat stays open until
+    the child's next turn is judged against it.
+    """
+    phrase = match.invitation(reply) or ""
+    if phrase != sess.read_target or sess.read_verdict in ("ok", "other"):
+        sess.read_tries = 0
+    sess.awaiting = phrase
+    sess.nudged = False
+    sess.read_target, sess.read_verdict = "", ""
+
+
 def build_messages(sess: Session, text: str) -> list[dict]:
     """Prompt for one turn: stable rules, then history, then the plan.
 
@@ -461,6 +513,8 @@ def build_messages(sess: Session, text: str) -> list[dict]:
                               new_per_day=NEW_PER_DAY, turn=sess.turn_count)
     if sess.summary:
         plan = replace(plan, summary=sess.summary)
+    if sess.awaiting:
+        plan = judge_reading(sess, plan, text)
     sess.plan = plan   # the turn's bookkeeping credits what was asked for
     block = state_block.render(plan, BLOCK_CAPS)
     messages = [{"role": "system", "content": sess.system_prompt()}]
@@ -491,23 +545,36 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
 
         await send_json(ws, {"type": "state", "value": "thinking"})
         reply_parts, sent_start = [], 0
+        stopped_at = None   # reply text up to the request to repeat
 
         async for delta in llm.stream_chat(messages, cancel=cancel):
             if cancel.is_set():
                 break
             reply_parts.append(delta)
-            await send_json(ws, {"type": "reply_delta", "text": delta})
             cleaned = THINK_RE.sub("", "".join(reply_parts))
+            # A request to repeat is the end of the turn: the child has to
+            # get the floor, so nothing after it is shown or spoken.
+            stopped_at = match.cut_after_invitation(cleaned)
+            if stopped_at is not None:
+                extra = len(cleaned) - len(stopped_at)
+                delta = delta[: max(0, len(delta) - extra)]
+                cleaned = stopped_at
+            if delta:
+                await send_json(ws, {"type": "reply_delta", "text": delta})
             # Emit every complete sentence (>= SENTENCE_MIN_CHARS) for TTS.
             emitted, sent_start = extract_sentences(cleaned, sent_start)
             for sentence in emitted:
                 spoken.append(sentence)
                 await queue_sentence(ws, queue, marks, t0, sentence)
+            if stopped_at is not None:
+                break
         if cancel.is_set():
+            sess.awaiting = ""
             await send_json(ws, {"type": "interrupted"})
             return
 
-        reply = THINK_RE.sub("", "".join(reply_parts)).strip()
+        reply = (stopped_at if stopped_at is not None
+                 else THINK_RE.sub("", "".join(reply_parts))).strip()
         rest = reply[sent_start:].strip() if sent_start < len(reply) else ""
         if rest:
             spoken.append(rest)
@@ -518,6 +585,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         if reply:
             sess.history.append({"role": "user", "content": text})
             sess.history.append({"role": "assistant", "content": reply})
+            note_invitation(sess, reply)
         await send_json(ws, {"type": "reply_done", "marks": marks})
     except Exception as e:  # keep the socket alive; surface the error
         queue.put_nowait(None)
@@ -535,6 +603,53 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
                 task = asyncio.create_task(compact_history(sess))
                 task.add_done_callback(
                     lambda _: setattr(sess, "compacting", False))
+        if not cancel.is_set():
+            await send_json(ws, {"type": "state", "value": "listening"})
+
+
+def cancel_nudge(sess: Session) -> None:
+    task, sess.nudge_task = sess.nudge_task, None
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def schedule_nudge(ws: WebSocket, sess: Session) -> None:
+    """After a request to repeat, prompt once if the child stays silent."""
+    cancel_nudge(sess)
+    if READ_WAIT_S <= 0 or not sess.awaiting or sess.nudged:
+        return
+    sess.nudge_task = asyncio.create_task(nudge_after_wait(ws, sess, sess.awaiting))
+
+
+async def nudge_after_wait(ws: WebSocket, sess: Session, phrase: str):
+    await asyncio.sleep(READ_WAIT_S)
+    # Anything that has happened since means the child is not silent: they
+    # are speaking, a reply is on its way, or the request was answered.
+    if (not sess.streaming or sess.awaiting != phrase or sess.nudged
+            or sess.busy or sess.speaking or sess.svad.active):
+        return
+    sess.nudged = True
+    sess.cancel = asyncio.Event()
+    sess.busy = True
+    task = asyncio.create_task(nudge_turn(ws, sess, phrase, sess.cancel))
+    sess.turn_task = task
+    task.add_done_callback(lambda _: setattr(sess, "busy", False))
+
+
+async def nudge_turn(ws: WebSocket, sess: Session, phrase: str,
+                     cancel: asyncio.Event):
+    """Speak the one-off prompt; it is not recorded as a turn."""
+    t0 = time.perf_counter()
+    queue: asyncio.Queue = asyncio.Queue()
+    worker = asyncio.create_task(tts_worker(ws, sess, queue, {}, t0, cancel))
+    line = NUDGE_LINES[len(phrase) % len(NUDGE_LINES)].format(w=phrase)
+    try:
+        await send_json(ws, {"type": "nudge", "text": line})
+        queue.put_nowait(line)
+        queue.put_nowait(None)
+        await worker
+    finally:
+        worker.cancel()
         if not cancel.is_set():
             await send_json(ws, {"type": "state", "value": "listening"})
 
@@ -560,6 +675,7 @@ async def cancel_turn(sess: Session):
 
 
 async def start_turn(ws: WebSocket, sess: Session, pcm24: np.ndarray):
+    cancel_nudge(sess)
     await cancel_turn(sess)
     sess.cancel = asyncio.Event()
     sess.busy = True
@@ -626,6 +742,7 @@ async def ws_endpoint(ws: WebSocket):
                 data = json.loads(text)
                 mtype = data.get("type")
                 if mtype == "mode":
+                    cancel_nudge(sess)
                     sess.mode = data["value"] if data["value"] in cfg["modes"] else DEFAULT_MODE
                     # Mode and conversation are the same thing here: a reply
                     # in the wrong register is worse than a fresh start.
@@ -661,6 +778,7 @@ async def ws_endpoint(ws: WebSocket):
                 elif mtype == "playback":
                     if data.get("value") == "ended":
                         sess.speaking = False
+                        schedule_nudge(ws, sess)
                 elif mtype == "ping":
                     await send_json(ws, {"type": "pong"})
             elif (data := msg.get("bytes")) is not None and sess.streaming:
@@ -668,6 +786,7 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        cancel_nudge(sess)
         await cancel_turn(sess)
         if sess.vad_task:
             sess.vad_task.cancel()

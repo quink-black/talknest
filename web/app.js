@@ -263,6 +263,9 @@ async function onMessage(ev) {
       }
       scrollTranscript();
       break;
+    case "nudge":
+      addBubble("reply", msg.text);
+      break;
     case "audio_start":
       playbackActive = true;
       audioEnded = false;

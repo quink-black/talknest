@@ -194,6 +194,48 @@ async def run_topics(sess, plan_turn: bool) -> dict:
             "replies": replies}
 
 
+# (word asked for, what the child said back, what the reply must do)
+READBACKS = [
+    ("moon", "Moon.", "ok"),
+    ("dinosaur", "dinosaur", "ok"),
+    ("moon", "Mon.", "miss"),
+    ("football", "木", "miss"),
+    ("cat", "我家的猫叫咪咪", "other"),
+]
+
+
+async def run_readbacks(sess) -> dict:
+    """The turn after "跟我读一遍": does the reply respond to the attempt.
+
+    A good attempt should be acknowledged without another request to
+    repeat; a miss should end on one more request, with nothing after it;
+    a child who changed the subject should be answered, not drilled.
+    """
+    results, replies = {"ok": 0, "miss": 0, "other": 0}, []
+    for word, said, want in READBACKS:
+        sess.history[:] = [
+            {"role": "user", "content": "我想学一个词"},
+            {"role": "assistant", "content": f"好呀。跟我读一遍：{word}！"}]
+        sess.awaiting, sess.read_tries = word, 0
+        sess.turn_count = 1
+        reply = ""
+        async for delta in orch.llm.stream_chat(orch.build_messages(sess, said)):
+            reply += delta
+        reply = orch.THINK_RE.sub("", reply).strip()
+        cut = orch.match.cut_after_invitation(reply)
+        reply = cut if cut is not None else reply
+        asks_again = orch.match.invitation(reply) is not None
+        if want == "ok" and not asks_again and word.lower() not in "真棒":
+            results["ok"] += 1
+        elif want == "miss" and asks_again and reply.rstrip("。.").endswith(
+                ("！", "!", "？", "?", word, "”", "\"")):
+            results["miss"] += 1
+        elif want == "other" and not asks_again:
+            results["other"] += 1
+        replies.append((word, said, want, reply))
+    return {"hit": results, "replies": replies}
+
+
 def report(cfg: dict, rounds: int, planned: dict, baseline: dict,
            mis: dict) -> str:
     profile = cfg["llm"]["profiles"][cfg["llm"]["active"]]
@@ -260,6 +302,7 @@ async def main_async(args) -> int:
         mis = await run_mishearings(planned_session)
         topics = await run_topics(planned_session, plan_turn=False)
         woven = await run_topics(planned_session, plan_turn=True)
+        readbacks = await run_readbacks(planned_session)
         baseline_session = orch.Session()
         baseline_session.open_learner("eval-baseline")
         baseline = await run(baseline_session, utterances, with_plan=False)
@@ -292,6 +335,13 @@ async def main_async(args) -> int:
         print(f"{label}: used a plan word:        {result['woven']}/{n}")
         for text, reply in result["replies"]:
             print(f"  [{text}] {' '.join(reply.split())[:150]}")
+
+    hits = readbacks["hit"]
+    print(f"read-back: good attempt, no new request:  {hits['ok']}/2")
+    print(f"read-back: miss, asked once more:         {hits['miss']}/2")
+    print(f"read-back: changed subject, not drilled:  {hits['other']}/1")
+    for word, said, want, reply in readbacks["replies"]:
+        print(f"  [{word} / {said} / {want}] {' '.join(reply.split())[:160]}")
 
     text = report(load(), len(utterances), planned, baseline, mis)
     if args.write:

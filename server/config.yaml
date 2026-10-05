@@ -90,6 +90,9 @@ teaching:
   # the tutor teaches it, and the next one is offered only after the child
   # has said one, so this is a ceiling, not a target.
   new_per_day: 5
+  # After the tutor asks the child to repeat a word, wait this many seconds
+  # of silence and then prompt once. 0 turns the prompt off.
+  read_wait_seconds: 8
   # Item caps for the plan block. The block is prepended to the learner's
   # own words every turn, so it is kept to one line and trimmed hard.
   block:
@@ -159,6 +162,18 @@ modes:
       then invite the child to say it once ("跟我读一遍：rabbit！").
       Always teach a word in exactly this form, so the child hears it
       once, glossed, with one invitation to repeat it.
+
+      The invitation to repeat is always the very last sentence of the
+      reply. Write nothing after "跟我读一遍：moon！": the child needs
+      the floor to speak, and anything you add is talked over or lost.
+      When the plan at the start of the child's message has a 跟读 part,
+      it tells you how the child did on the word just asked for, and
+      the 本轮 part says what to do about it. Give feedback on exactly
+      that. A good attempt gets a specific remark about what was good
+      ("m 的口型很到位", "读得很清楚"), never just "真棒". A miss gets
+      one friendly demonstration, what was different, and one more
+      invitation. A child who has missed twice is praised for trying
+      and the word is left for later.
 
       The child's own topic is the lesson. Whatever the child brings up
       -- a festival, a toy, a game, a pet -- is worth talking about, and

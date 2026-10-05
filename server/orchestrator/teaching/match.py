@@ -41,6 +41,44 @@ def teaching_points(text: str) -> list[str]:
     return out
 
 
+# "跟我读一遍：moon！" -- the tutor asking the child to say something back.
+# The English after the colon is what the child is expected to say; it may
+# be a phrase. The lead-in is required so that an English word after "说："
+# in a story ("妈妈说：hello") is not taken for a request.
+_INVITE = re.compile(
+    r"(?:(?:跟着?我|你来|再|一起|来|试着|请|试试)(?:再)?(?:读|说|念)"
+    r"(?:一遍|一下|一次)?|再试一次|试一次)"
+    r"\s*[：:]\s*[\"“'‘]?([A-Za-z][A-Za-z' ]*)")
+_CLOSERS = re.compile(r"[\"”'’)）]*[！!。.？?]?")
+
+
+def invitation(text: str) -> str | None:
+    """The English the tutor asked the child to repeat, lowercase."""
+    m = _INVITE.search(text or "")
+    return m.group(1).strip().lower() if m else None
+
+
+def cut_after_invitation(text: str) -> str | None:
+    """text up to the end of the sentence that asks the child to repeat.
+
+    None while there is nothing to cut: no invitation yet, or the invited
+    phrase has not finished arriving. A request to repeat is where the tutor
+    has to stop talking so the child can answer, so whatever the model wrote
+    after it is dropped.
+    """
+    m = _INVITE.search(text or "")
+    if m is None or m.end() >= len(text):
+        return None
+    return text[: _CLOSERS.match(text, m.end()).end()]
+
+
+def said(heard: str, phrase: str) -> bool:
+    """Whether every word of phrase is in heard (plurals and case ignored)."""
+    want = [_stem(t) for t in _TOKEN.findall((phrase or "").lower())]
+    have = {_stem(t) for t in _TOKEN.findall((heard or "").lower())}
+    return bool(want) and all(w in have for w in want)
+
+
 def _stem(word: str) -> str:
     """Trim plural and third-person endings.
 
