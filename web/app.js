@@ -870,6 +870,7 @@ $("learner").addEventListener("change", (e) => {
   clearTranscript();
   send({ type: "learner", value: e.target.value });
   cancelEnroll();
+  disarmClear();   // a second click must not clear the next learner's voices
   refreshParent();
   loadSpeakers();
 });
@@ -1021,7 +1022,9 @@ function renderSpeakers(status) {
     const rec = row.querySelector(".vpRec");
     rec.textContent = recording ? "停止" : "录一段";
     rec.disabled = !status.ready || (!!enrolling && !recording);
-    row.querySelector(".vpClear").disabled = !!enrolling || !info.samples;
+    const clear = row.querySelector(".vpClear");
+    clear.disabled = !!enrolling || !info.samples;
+    clear.textContent = clearArmed === role ? "确认清除" : "清除";
   }
   $("vpState").textContent = !status.ready
     ? "服务端没有声纹模型，无法录入"
@@ -1109,14 +1112,42 @@ async function finishEnroll() {
   }
 }
 
+/* Clearing asks twice inside the page. A native confirm() cannot be used:
+   the iPad shell's WKWebView shows no dialog for it and answers false, so
+   the request would never be sent. */
+const CLEAR_ARM_MS = 4000;
+let clearArmed = "", clearArmTimer = 0;
+
+function disarmClear() {
+  clearTimeout(clearArmTimer);
+  clearArmed = "";
+  if (lastSpeakers) renderSpeakers(lastSpeakers);
+}
+
 async function clearSpeaker(role) {
+  if (clearArmed !== role) {
+    clearTimeout(clearArmTimer);
+    clearArmed = role;
+    clearArmTimer = setTimeout(disarmClear, CLEAR_ARM_MS);
+    vpMessage(`再点一次“确认清除”，删除${ROLE_LABEL[role]}的全部声纹`);
+    if (lastSpeakers) renderSpeakers(lastSpeakers);
+    return;
+  }
+  disarmClear();
   const learner = $("learner").value;
-  if (!confirm(`清除${ROLE_LABEL[role]}的全部声纹？`)) return;
   try {
     const r = await fetch(
       `learners/${encodeURIComponent(learner)}/speakers/${role}`, { method: "DELETE" });
-    if (r.ok) { lastSpeakers = await r.json(); renderSpeakers(lastSpeakers); vpMessage(""); }
-  } catch (e) { vpMessage("清除失败：网络或服务端错误"); }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      vpMessage(data.error || "清除失败，请重试");
+    } else {
+      vpMessage(`${ROLE_LABEL[role]}的声纹已清除`);
+    }
+  } catch (e) {
+    vpMessage("清除失败：网络或服务端错误，请重试");
+  }
+  await loadSpeakers();
 }
 
 for (const row of document.querySelectorAll(".vprow")) {
