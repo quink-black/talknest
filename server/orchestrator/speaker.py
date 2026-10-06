@@ -177,6 +177,7 @@ class SpeakerBook:
         self.min_seconds = float(cfg.get("min_seconds", 1.0))
         self.enroll_min_seconds = float(cfg.get("enroll_min_seconds", 3.0))
         self.max_enroll_seconds = float(cfg.get("max_enroll_seconds", 20.0))
+        self.enroll_min_score = float(cfg.get("enroll_min_score", 0.55))
         self._lock = threading.Lock()
         self._last_id = 0
         self._voices: dict[str, list[dict]] = {r: [] for r in ROLES}
@@ -275,11 +276,13 @@ class SpeakerBook:
 
     # -- enroll / clear ----------------------------------------------------
 
-    def enroll(self, role: str, pcm24: np.ndarray, sr: int) -> float:
-        """Add one recording to a role; returns the seconds of voice used.
+    def enroll(self, role: str, pcm24: np.ndarray, sr: int) -> tuple[float, str]:
+        """Add one recording to a role.
 
-        Raises ValueError with a message for the person recording when the
-        clip cannot be used.
+        Returns the seconds of voice used and a note for the person
+        recording, empty unless the clip sounds more like someone else.
+        Raises ValueError with a message for them when the clip cannot be
+        used.
         """
         if role not in ROLES:
             raise ValueError(f"unknown role {role!r}")
@@ -297,13 +300,41 @@ class SpeakerBook:
         if vec is None:
             raise ValueError("无法从这段录音提取声纹")
         with self._lock:
+            near = self._nearest_clip(vec)
+            own = near.pop(role, None)
+            if own is not None and own < self.enroll_min_score:
+                raise ValueError(
+                    f"这段声音和{LABELS[role]}已录的每一段都不像（最高相似度 "
+                    f"{own:.2f}）。如果这次混进了别人的声音，请在安静处重录；"
+                    "如果是之前录的那段有误，请先删除那一段。")
+            note = ""
+            if near:
+                # Only a voice that would pass as the other person is worth
+                # a word: a role's first clip is always closer to somebody
+                # already enrolled than to its own, empty, row.
+                other = max(near, key=near.get)
+                if (near[other] >= self.enroll_min_score
+                        and (own is None or near[other] > own)):
+                    note = (f"这段声音更像已录入的{LABELS[other]}，请确认没有"
+                            "录错人；录错了就删除这一段。")
             items = self._voices[role]
             items.append({"vec": [float(v) for v in vec],
                           "seconds": seconds, "id": self._next_id()})
             del items[:-MAX_SAMPLES_PER_ROLE]
             self._rebuild()
             self._save()
-        return seconds
+        return seconds, note
+
+    def _nearest_clip(self, vec: np.ndarray) -> dict[str, float]:
+        """Per role, the similarity of vec to that role's closest clip.
+
+        The closest clip rather than the role's average or worst clip: a
+        wrong clip already enrolled must not make every later, right clip
+        look like a stranger.
+        """
+        return {role: max(float(vec @ np.asarray(i["vec"], dtype=np.float32))
+                          for i in items)
+                for role, items in self._voices.items() if items}
 
     def drop(self, role: str, clip_id: int) -> bool:
         """Forget one recording. False when it is not there."""

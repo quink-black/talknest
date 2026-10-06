@@ -94,6 +94,11 @@ speaker_id:
   min_seconds: 1.0         # voiced speech needed to attempt a match
   enroll_min_seconds: 3.0  # voiced speech needed to accept an enrolled clip
   max_enroll_seconds: 20.0
+  # A new clip is refused when even the closest clip already enrolled for
+  # that role scores below this: it is someone else, or the room drowned
+  # the voice. On 8 s clips of three TTS voices, the same voice scored
+  # 0.71-0.88 and different voices up to 0.45.
+  enroll_min_score: 0.55
 
 # Teaching state: curriculum units, per-learner progress and the per-turn
 # plan block.

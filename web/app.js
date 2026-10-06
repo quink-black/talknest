@@ -1110,7 +1110,8 @@ async function finishEnroll() {
         body: pcm.buffer });
     const data = await r.json();
     if (!r.ok) { vpMessage(data.error || "录入失败"); return; }
-    vpMessage(`${ROLE_LABEL[role]}：这段有效语音 ${data.seconds} 秒，已保存`);
+    vpMessage(`${ROLE_LABEL[role]}：这段有效语音 ${data.seconds} 秒，已保存。`
+      + (data.note ? " " + data.note : ""));
     lastSpeakers = data;
   } catch (e) {
     vpMessage("录入失败：网络或服务端错误");

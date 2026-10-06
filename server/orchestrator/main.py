@@ -1025,11 +1025,16 @@ async def enroll_speaker(learner: str, role: str, request: Request):
     pcm = np.frombuffer(body, dtype="<i2")
     try:
         # Embedding runs on the CPU for a second or so: off the event loop.
-        seconds = await asyncio.to_thread(book.enroll, role, pcm, CLIENT_SR)
+        seconds, note = await asyncio.to_thread(book.enroll, role, pcm,
+                                                CLIENT_SR)
     except ValueError as e:
+        # A warning so it reaches the service log: nothing configures the
+        # application loggers below that, and the reasons are what tells
+        # a threshold that is too strict from a noisy room.
+        log.warning("voiceprint clip refused (%s/%s): %s", name, role, e)
         return JSONResponse({"error": str(e)}, status_code=400)
     reload_speakers(name)
-    return {"seconds": round(seconds, 1), **book.status()}
+    return {"seconds": round(seconds, 1), "note": note, **book.status()}
 
 
 @app.delete("/learners/{learner}/speakers/{role}/{clip_id}")

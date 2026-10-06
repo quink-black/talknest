@@ -325,6 +325,59 @@ class TestClipEndpoints:
         assert client.delete("/learners/tester/speakers/cat/1").status_code == 404
 
 
+class TestEnrollmentCheck:
+    def test_a_clip_unlike_the_role_is_refused(self, tmp_path):
+        book = make_book(tmp_path)
+        book.enroll("child", clip(1), SR24)
+        with pytest.raises(ValueError, match="都不像"):
+            book.enroll("child", clip(3), SR24)
+        assert book.status()["roles"]["child"]["samples"] == 1
+
+    def test_a_wrong_clip_already_kept_does_not_block_right_ones(self, tmp_path):
+        # The child's row holds one clip of the child and one of mom.
+        saved = {"child": [{"vec": VOICES[1], "seconds": 4.0, "id": 1},
+                           {"vec": VOICES[3], "seconds": 4.0, "id": 2}]}
+        (tmp_path / "speakers.json").write_text(json.dumps(saved))
+        book = make_book(tmp_path)
+        seconds, note = book.enroll("child", clip(1), SR24)
+        assert seconds > 0 and note == ""
+        assert book.status()["roles"]["child"]["samples"] == 3
+
+    def test_a_clip_like_someone_else_is_kept_with_a_note(self, tmp_path):
+        book = make_book(tmp_path)
+        book.enroll("mom", clip(3), SR24)
+        _, note = book.enroll("dad", clip(3), SR24)   # mom spoke in dad's row
+        assert "妈妈" in note
+        assert book.status()["roles"]["dad"]["samples"] == 1
+
+    def test_a_first_clip_unlike_everyone_has_no_note(self, tmp_path):
+        book = make_book(tmp_path)
+        book.enroll("child", clip(1), SR24)
+        book.enroll("dad", clip(2), SR24)
+        assert book.enroll("mom", clip(3), SR24)[1] == ""
+
+    def test_a_plainly_right_clip_has_no_note(self, tmp_path):
+        book = make_book(tmp_path)
+        enroll_all(book)
+        assert book.enroll("dad", clip(2), SR24)[1] == ""
+
+    def test_a_refusal_is_reported_and_logged(self, client, caplog):
+        client.post("/learners/tester/speakers/child", content=clip(1).tobytes())
+        with caplog.at_level("WARNING"):
+            r = client.post("/learners/tester/speakers/child",
+                            content=clip(3).tobytes())
+        assert r.status_code == 400 and "都不像" in r.json()["error"]
+        assert any("refused" in m for m in caplog.messages)
+        assert client.get("/learners/tester/speakers").json()[
+            "roles"]["child"]["samples"] == 1
+
+    def test_the_note_reaches_the_page(self, client):
+        client.post("/learners/tester/speakers/mom", content=clip(3).tobytes())
+        body = client.post("/learners/tester/speakers/dad",
+                           content=clip(3).tobytes()).json()
+        assert "妈妈" in body["note"]
+
+
 class _WS:
     client_state = main.WebSocketState.CONNECTED
 
