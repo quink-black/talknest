@@ -1025,6 +1025,14 @@ function renderSpeakers(status) {
     const clear = row.querySelector(".vpClear");
     clear.disabled = !!enrolling || !info.samples;
     clear.textContent = clearArmed === role ? "确认清除" : "清除";
+    // A clip that caught the wrong voice can be dropped on its own.
+    row.querySelector(".vpclips").innerHTML = (info.clips || []).map((c) =>
+      `<span class="vpclip">${Number(c.seconds)} 秒<button class="vpDrop"`
+      + ` data-clip="${Number(c.id)}"${enrolling ? " disabled" : ""}>删除</button></span>`)
+      .join("");
+    for (const b of row.querySelectorAll(".vpDrop")) {
+      b.addEventListener("click", () => dropClip(role, b.dataset.clip));
+    }
   }
   $("vpState").textContent = !status.ready
     ? "服务端没有声纹模型，无法录入"
@@ -1110,6 +1118,24 @@ async function finishEnroll() {
     if (lastSpeakers) renderSpeakers(lastSpeakers);
     loadSpeakers();
   }
+}
+
+async function dropClip(role, clipId) {
+  const learner = $("learner").value;
+  try {
+    const r = await fetch(
+      `learners/${encodeURIComponent(learner)}/speakers/${role}/${clipId}`,
+      { method: "DELETE" });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      vpMessage(data.error || "删除失败，请重试");
+    } else {
+      vpMessage(`已删除${ROLE_LABEL[role]}的一段录音`);
+    }
+  } catch (e) {
+    vpMessage("删除失败：网络或服务端错误，请重试");
+  }
+  await loadSpeakers();
 }
 
 /* Clearing asks twice inside the page. A native confirm() cannot be used:

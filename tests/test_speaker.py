@@ -158,14 +158,15 @@ class TestSpeakerBook:
         book = make_book(tmp_path)
         book.enroll("child", clip(1), SR24)
         saved = json.loads((tmp_path / "speakers.json").read_text())
-        assert set(saved["child"][0]) == {"vec", "seconds", "ts"}
+        assert set(saved["child"][0]) == {"vec", "seconds", "id"}
 
     def test_clearing_a_role_disables_matching(self, tmp_path):
         book = make_book(tmp_path)
         enroll_all(book)
         book.clear("child")
         assert not book.enabled()
-        assert book.status()["roles"]["child"] == {"samples": 0, "seconds": 0.0}
+        assert book.status()["roles"]["child"] == {
+            "samples": 0, "seconds": 0.0, "clips": []}
 
     def test_short_recordings_are_refused_with_a_reason(self, tmp_path):
         book = make_book(tmp_path)
@@ -259,6 +260,69 @@ class TestEnrollmentEndpoints:
         finally:
             main.session_by_ws.clear()
             sess.close()
+
+
+def _clip_ids(book, role):
+    return [c["id"] for c in book.status()["roles"][role]["clips"]]
+
+
+class TestEnrolledClips:
+    def test_each_clip_can_be_dropped_on_its_own(self, tmp_path):
+        book = make_book(tmp_path)
+        book.enroll("child", clip(1), SR24)
+        book.enroll("child", clip(1), SR24)
+        first, second = _clip_ids(book, "child")
+        assert first != second
+        assert book.drop("child", first)
+        assert _clip_ids(book, "child") == [second]
+        assert not book.drop("child", first)      # already gone
+
+    def test_dropping_the_last_child_clip_disables_matching(self, tmp_path):
+        book = make_book(tmp_path)
+        enroll_all(book)
+        book.drop("child", _clip_ids(book, "child")[0])
+        assert not book.enabled()
+
+    def test_clips_from_an_older_file_get_ids_of_their_own(self, tmp_path):
+        vec = [1.0, 0.0, 0.0, 0.0]
+        old = {"child": [{"vec": vec, "seconds": 4.0, "ts": 1.0},
+                         {"vec": vec, "seconds": 5.0, "ts": 2.0}],
+               "dad": [{"vec": [0.0, 1.0, 0.0, 0.0], "seconds": 4.0}]}
+        (tmp_path / "speakers.json").write_text(json.dumps(old))
+        book = make_book(tmp_path)
+        ids = _clip_ids(book, "child") + _clip_ids(book, "dad")
+        assert len(set(ids)) == 3 and 0 not in ids
+        # Each request reads the file afresh, so the ids must be the same
+        # for the next reader as for the page that was shown them.
+        assert _clip_ids(make_book(tmp_path), "child") == _clip_ids(book, "child")
+        book.drop("child", ids[0])
+        assert make_book(tmp_path).status()["roles"]["child"]["samples"] == 1
+
+    def test_a_new_clip_never_reuses_an_id(self, tmp_path, monkeypatch):
+        book = make_book(tmp_path)
+        book.enroll("child", clip(1), SR24)
+        # The clock steps back: the next id still has to be new.
+        monkeypatch.setattr(speaker.time, "time", lambda: 1.0)
+        again = make_book(tmp_path)
+        again.enroll("child", clip(1), SR24)
+        first, second = _clip_ids(again, "child")
+        assert second > first
+
+
+class TestClipEndpoints:
+    def test_dropping_one_clip_keeps_the_rest(self, client):
+        client.post("/learners/tester/speakers/child", content=clip(1).tobytes())
+        client.post("/learners/tester/speakers/child", content=clip(1).tobytes())
+        clips = client.get("/learners/tester/speakers").json()["roles"]["child"]["clips"]
+        body = client.delete(
+            f"/learners/tester/speakers/child/{clips[0]['id']}").json()
+        assert [c["id"] for c in body["roles"]["child"]["clips"]] == [clips[1]["id"]]
+
+    def test_a_clip_that_is_gone_is_404(self, client):
+        assert client.delete("/learners/tester/speakers/child/123").status_code == 404
+
+    def test_an_unknown_role_is_404(self, client):
+        assert client.delete("/learners/tester/speakers/cat/1").status_code == 404
 
 
 class _WS:

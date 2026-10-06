@@ -1032,6 +1032,19 @@ async def enroll_speaker(learner: str, role: str, request: Request):
     return {"seconds": round(seconds, 1), **book.status()}
 
 
+@app.delete("/learners/{learner}/speakers/{role}/{clip_id}")
+async def drop_speaker_clip(learner: str, role: str, clip_id: int):
+    """Forget one recording, for a clip that caught the wrong voice."""
+    if role not in speaker.ROLES:
+        return JSONResponse({"error": "unknown role"}, status_code=404)
+    name = slug(learner)
+    book = speaker_book(name)
+    if not book.drop(role, clip_id):
+        return JSONResponse({"error": "这段录音已经不在了"}, status_code=404)
+    reload_speakers(name)
+    return book.status()
+
+
 @app.delete("/learners/{learner}/speakers/{role}")
 async def clear_speaker(learner: str, role: str):
     if role not in speaker.ROLES:

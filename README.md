@@ -228,6 +228,10 @@ HFP 设备时，客户端降级为半双工，因为 HFP 的时延抖动实测�
 `data/learners/<学习者>/speakers.json`。声纹跟着“我是谁”走，换一个学习者
 需要重新录入。
 
+每一行下面列出已录的各段及其长度。某一段录进了别人的声音时，点那一段的
+“删除”即可，其余录音不受影响；“清除”删除该角色的全部录音，需要连点两次
+确认。
+
 **启用条件。** 孩子和至少一位家长都录入之后，识别才会启用。识别结果有
 四种：`child`、`dad`、`mom`，以及无法判断（`null`）。无法判断的情况包括
 有效语音不足 1 秒、与最接近的人相似度低于 `min_score`，以及最接近的两个
@@ -248,6 +252,7 @@ HFP 设备时，客户端降级为半双工，因为 HFP 的时延抖动实测�
 | `GET /learners/{learner}/speakers` | 各角色已录的段数与秒数，以及 `ready`、`enabled` |
 | `POST /learners/{learner}/speakers/{role}` | 请求体是 24 kHz 单声道 int16 原始 PCM，追加一段声纹 |
 | `DELETE /learners/{learner}/speakers/{role}` | 清除该角色的全部声纹 |
+| `DELETE /learners/{learner}/speakers/{role}/{clip_id}` | 删除一段录音，`clip_id` 取自 `GET` 返回的 `clips` |
 
 WebSocket 的 `user_text` 事件新增 `speaker` 字段，取值同上。阈值和开关在
 `server/config.yaml` 的 `speaker_id` 一节。识别准确率取决于麦克风和房间，

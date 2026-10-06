@@ -178,6 +178,7 @@ class SpeakerBook:
         self.enroll_min_seconds = float(cfg.get("enroll_min_seconds", 3.0))
         self.max_enroll_seconds = float(cfg.get("max_enroll_seconds", 20.0))
         self._lock = threading.Lock()
+        self._last_id = 0
         self._voices: dict[str, list[dict]] = {r: [] for r in ROLES}
         self._centroids: dict[str, np.ndarray] = {}
         self.reload()
@@ -193,7 +194,7 @@ class SpeakerBook:
                     voices[role].append({
                         "vec": [float(v) for v in item["vec"]],
                         "seconds": float(item.get("seconds", 0.0)),
-                        "ts": float(item.get("ts", 0.0)),
+                        "id": int(item.get("id", 0)),
                     })
         except FileNotFoundError:
             pass
@@ -201,7 +202,34 @@ class SpeakerBook:
             log.warning("ignoring unreadable %s: %s", self.path, e)
         with self._lock:
             self._voices = voices
+            self._last_id = max((i["id"] for items in voices.values()
+                                 for i in items), default=0)
+            if self._assign_missing_ids():
+                self._save()
             self._rebuild()
+
+    def _assign_missing_ids(self) -> bool:
+        """Give every clip an id of its own; True when any had to change.
+
+        Files written before clips had ids give all of them 0, and deleting
+        clip 0 would then delete every one of them. The ids are written back
+        at once, because each request reads the file afresh and has to see
+        the same ids the page was shown.
+        """
+        seen, changed = set(), False
+        for items in self._voices.values():
+            for item in items:
+                if item["id"] <= 0 or item["id"] in seen:
+                    item["id"] = self._next_id()
+                    changed = True
+                seen.add(item["id"])
+        return changed
+
+    def _next_id(self) -> int:
+        """When the clip was taken, in ms, but always above every id in use:
+        a clock stepping back must not hand out an id twice."""
+        self._last_id = max(int(time.time() * 1000), self._last_id + 1)
+        return self._last_id
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,7 +264,10 @@ class SpeakerBook:
         with self._lock:
             roles = {
                 role: {"samples": len(items),
-                       "seconds": round(sum(i["seconds"] for i in items), 1)}
+                       "seconds": round(sum(i["seconds"] for i in items), 1),
+                       "clips": [{"id": i["id"],
+                                  "seconds": round(i["seconds"], 1)}
+                                 for i in items]}
                 for role, items in self._voices.items()
             }
         return {"ready": self.ready, "enabled": self.enabled(),
@@ -268,11 +299,25 @@ class SpeakerBook:
         with self._lock:
             items = self._voices[role]
             items.append({"vec": [float(v) for v in vec],
-                          "seconds": seconds, "ts": time.time()})
+                          "seconds": seconds, "id": self._next_id()})
             del items[:-MAX_SAMPLES_PER_ROLE]
             self._rebuild()
             self._save()
         return seconds
+
+    def drop(self, role: str, clip_id: int) -> bool:
+        """Forget one recording. False when it is not there."""
+        if role not in ROLES:
+            raise ValueError(f"unknown role {role!r}")
+        with self._lock:
+            items = self._voices[role]
+            kept = [i for i in items if i["id"] != clip_id]
+            if len(kept) == len(items):
+                return False
+            self._voices[role] = kept
+            self._rebuild()
+            self._save()
+        return True
 
     def clear(self, role: str) -> None:
         if role not in ROLES:
