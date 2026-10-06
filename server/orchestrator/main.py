@@ -845,6 +845,7 @@ async def ws_endpoint(ws: WebSocket):
                     value = str(data.get("value", "")).strip() or DEFAULT_LEARNER
                     sess.open_learner(slug(value))
                     await send_json(ws, {"type": "learner", "value": sess.learner})
+                    await send_json(ws, voiceprint_message(sess))
                 elif mtype == "unit":
                     # Empty means "pick for me"; see scheduler.current_unit.
                     value = str(data.get("value", "")).strip()
@@ -1033,7 +1034,7 @@ async def enroll_speaker(learner: str, role: str, request: Request):
         # a threshold that is too strict from a noisy room.
         log.warning("voiceprint clip refused (%s/%s): %s", name, role, e)
         return JSONResponse({"error": str(e)}, status_code=400)
-    reload_speakers(name)
+    await reload_speakers(name)
     return {"seconds": round(seconds, 1), "note": note, **book.status()}
 
 
@@ -1046,7 +1047,7 @@ async def drop_speaker_clip(learner: str, role: str, clip_id: int):
     book = speaker_book(name)
     if not book.drop(role, clip_id):
         return JSONResponse({"error": "这段录音已经不在了"}, status_code=404)
-    reload_speakers(name)
+    await reload_speakers(name)
     return book.status()
 
 
@@ -1057,15 +1058,36 @@ async def clear_speaker(learner: str, role: str):
     name = slug(learner)
     book = speaker_book(name)
     book.clear(role)
-    reload_speakers(name)
+    await reload_speakers(name)
     return book.status()
 
 
-def reload_speakers(learner: str) -> None:
-    """Make open conversations of this learner see a changed voiceprint."""
-    for sess in session_by_ws.values():
-        if sess.learner == learner and sess.speakers is not None:
-            sess.speakers.reload()
+def voiceprint_message(sess: Session) -> dict:
+    """Whether a learner's voices are enrolled, for the page's bubble labels.
+
+    The learner is named so a page that has moved on to another learner
+    can tell the message is not about the one it shows now.
+    """
+    return {"type": "voiceprint", "learner": sess.learner,
+            "enabled": bool(sess.speakers and sess.speakers.enabled())}
+
+
+async def reload_speakers(learner: str) -> None:
+    """Make open conversations of this learner see a changed voiceprint.
+
+    Runs after the change is on disk, so a page that cannot be told must
+    not turn the request into an error: the caller would record the clip
+    a second time.
+    """
+    # A copy: the dict changes when a page connects or leaves during a send.
+    for ws, sess in list(session_by_ws.items()):
+        if sess.learner != learner or sess.speakers is None:
+            continue
+        sess.speakers.reload()
+        try:
+            await send_json(ws, voiceprint_message(sess))
+        except Exception as e:
+            log.warning("could not tell a page about the voiceprint: %s", e)
 
 
 # Catch-all static mount must come last: routes registered before it win.

@@ -28,6 +28,7 @@ let playNextAt = 0, sources = [];
 let playbackActive = false, audioEnded = false, playSr = CLIENT_SR;
 let replyBubble = null;
 let enrolling = null;      // the voiceprint recording in progress, if any
+let voiceprintOn = false;  // voices are enrolled, so user bubbles get a label
 
 /* Teacher avatar: decorative, so it is driven entirely from state the page
    already has -- never from anything the server would have to add. */
@@ -250,8 +251,13 @@ async function onMessage(ev) {
       // reason we are paused.
       if (streaming) setStatus(msg.value, msg.value !== "listening");
       break;
+    case "voiceprint":
+      // Only about the learner on screen: a reply that was on its way when
+      // the picker changed describes the previous one.
+      if (msg.learner === $("learner").value) voiceprintOn = !!msg.enabled;
+      break;
     case "user_text":
-      addBubble("user", msg.text, msg.speaker);
+      addBubble("user", msg.text, bubbleRole(msg.speaker));
       // Text takes a moment to arrive while audio takes longer still, so
       // the empty bubble has to look alive or the page reads as broken.
       replyBubble = addBubble("reply", "");
@@ -303,14 +309,24 @@ async function onMessage(ev) {
   }
 }
 
+/* The child reads their own words as 我; a turn whose voice was not
+   clearly anyone's is the child's too, since the page is theirs. Without
+   enrolled voices nobody is told apart, so there is no label at all. */
+const BUBBLE_LABEL = { child: "我", dad: "爸爸", mom: "妈妈" };
+
+function bubbleRole(speaker) {
+  if (speaker === "dad" || speaker === "mom") return speaker;
+  return voiceprintOn ? "child" : "";
+}
+
 function addBubble(kind, text, who) {
   const div = document.createElement("div");
   div.className = "bubble " + kind;
-  if (who && ROLE_LABEL[who]) {
+  if (who && BUBBLE_LABEL[who]) {
     div.classList.add(who);
     const tag = document.createElement("span");
     tag.className = "who";
-    tag.textContent = ROLE_LABEL[who];
+    tag.textContent = BUBBLE_LABEL[who];
     div.appendChild(tag);
   }
   div.appendChild(document.createTextNode(text));
@@ -1039,6 +1055,7 @@ function renderSpeakers(status) {
     : status.enabled
       ? "识别已启用：对话里会标出是谁在说话"
       : "孩子和至少一位家长都录入后才会启用识别";
+  voiceprintOn = !!status.enabled;
 }
 
 async function loadSpeakers() {
@@ -1047,7 +1064,9 @@ async function loadSpeakers() {
   try {
     const r = await fetch(`learners/${encodeURIComponent(learner)}/speakers`);
     if (!r.ok) return;
-    lastSpeakers = await r.json();
+    const data = await r.json();
+    if (learner !== $("learner").value) return;   // the picker moved on
+    lastSpeakers = data;
     renderSpeakers(lastSpeakers);
   } catch (e) { /* offline or old server: leave the panel as it is */ }
 }

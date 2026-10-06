@@ -250,7 +250,7 @@ class TestEnrollmentEndpoints:
     def test_open_conversations_see_a_new_enrollment(self, client, tmp_path):
         sess = main.Session()
         sess.open_learner("tester")
-        main.session_by_ws[object()] = sess
+        main.session_by_ws[_WS()] = sess
         try:
             client.post("/learners/tester/speakers/child",
                         content=clip(1).tobytes())
@@ -559,3 +559,71 @@ class TestTranscriptLine:
         assert line({"role": "user",
                      "content": main.PARENT_PREFIX + "hi"}) == "家长：hi"
         assert line({"role": "assistant", "content": "好"}) == "老师：好"
+
+
+class _BrokenWS(_WS):
+    async def send_text(self, text):
+        raise RuntimeError("socket is closing")
+
+
+class _JoiningWS(_WS):
+    """A page that connects while another is being told."""
+
+    async def send_text(self, text):
+        await super().send_text(text)
+        main.session_by_ws[_WS()] = self.sess
+
+
+class TestVoiceprintNotice:
+    def test_choosing_a_learner_says_whether_voices_are_enrolled(self, client):
+        for clip_, role in ((clip(1), "child"), (clip(2), "dad")):
+            client.post(f"/learners/tester/speakers/{role}", content=clip_.tobytes())
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "learner", "value": "tester"})
+            assert ws.receive_json()["type"] == "learner"
+            assert ws.receive_json() == {"type": "voiceprint",
+                                         "learner": "tester", "enabled": True}
+            ws.send_json({"type": "learner", "value": "other"})
+            ws.receive_json()
+            assert ws.receive_json()["enabled"] is False
+
+    def _open(self, ws_cls):
+        sess = main.Session()
+        sess.open_learner("tester")
+        ws = ws_cls()
+        ws.sess = sess
+        main.session_by_ws[ws] = sess
+        return ws, sess
+
+    def test_an_enrollment_tells_the_open_pages(self, client):
+        ws, sess = self._open(_WS)
+        try:
+            client.post("/learners/tester/speakers/child", content=clip(1).tobytes())
+            client.post("/learners/tester/speakers/dad", content=clip(2).tobytes())
+            notes = [m for m in ws.sent if m["type"] == "voiceprint"]
+            assert [m["enabled"] for m in notes] == [False, True]
+        finally:
+            main.session_by_ws.clear()
+            sess.close()
+
+    def test_a_page_that_cannot_be_told_does_not_fail_the_enrollment(self, client):
+        broken, sess = self._open(_BrokenWS)
+        good, _ = self._open(_WS)
+        try:
+            r = client.post("/learners/tester/speakers/child",
+                            content=clip(1).tobytes())
+            assert r.status_code == 200
+            assert [m["type"] for m in good.sent] == ["voiceprint"]
+        finally:
+            main.session_by_ws.clear()
+            sess.close()
+
+    def test_a_page_joining_during_the_notice_does_not_fail_it(self, client):
+        ws, sess = self._open(_JoiningWS)
+        try:
+            r = client.post("/learners/tester/speakers/child",
+                            content=clip(1).tobytes())
+            assert r.status_code == 200
+        finally:
+            main.session_by_ws.clear()
+            sess.close()
