@@ -982,6 +982,120 @@ class TestTurnAlternation:
         assert session.turn_count == 0
 
 
+class TestFreeTalk:
+    """Free talk: the child leads, no curriculum word is pushed."""
+
+    def test_the_switch_starts_off(self, session):
+        assert not session.free
+        assert not session.free_active()
+
+    def test_the_free_prompt_has_no_teaching_rules(self, session):
+        session.set_free(True)
+        prompt = session.system_prompt()
+        assert "free talk" in prompt.lower()
+        assert "新授" not in prompt
+        assert "已会" not in prompt
+        # The summary of earlier talk still arrives in brackets.
+        assert main.FREE_RULES in prompt
+
+    def test_each_child_mode_has_its_own_free_prompt(self, session):
+        session.set_free(True)
+        kid = session.system_prompt()
+        session.mode = "kid_upper"
+        assert session.system_prompt() != kid
+
+    def test_adult_has_nothing_to_switch_to(self, session):
+        session.set_free(True)
+        session.mode = "adult"
+        session.load_curriculum()   # as the socket does on a mode switch
+        assert not session.free_active()
+        assert session.system_prompt() == " ".join(
+            main.cfg["modes"]["adult"]["system_prompt"].split())
+
+    def test_no_plan_words_are_offered(self, session):
+        session.set_free(True)
+        for n in range(4):
+            session.turn_count = n
+            messages = main.build_messages(session, "你好")
+            assert messages[-1]["content"] == "你好"
+            assert not session.plan.new and not session.plan.review
+
+    def test_the_summary_still_comes_along(self, session):
+        session.set_free(True)
+        session.summary = "聊过中秋节"
+        block = main.build_messages(session, "你好")[-1]["content"]
+        assert "聊过中秋节" in block
+
+    def test_nothing_the_child_says_is_judged(self, session, monkeypatch):
+        session.set_free(True)
+        session.awaiting = "moon"
+        ws = _FakeWS()
+        session.streaming = True
+        monkeypatch.setattr(main, "READ_WAIT_S", 0.01)
+
+        async def go():
+            main.schedule_nudge(ws, session)
+            await asyncio.sleep(0.1)
+
+        asyncio.run(go())
+        assert not [m for m in ws.sent if m["type"] == "nudge"]
+        # The pending request is answered by the reply, not graded: the plan
+        # carries no verdict on it.
+        assert "跟读" not in main.build_messages(session, "moon")[-1]["content"]
+
+    def test_the_childs_english_still_counts(self, session):
+        session.set_free(True)
+        main.build_messages(session, "red")
+        main.record_turn(session, "red", ["好呀。"], False)
+        assert session.store.boxes()["red"] == 1
+
+    def test_a_free_reply_does_not_open_a_drill(self, session, monkeypatch):
+        session.set_free(True)
+        monkeypatch.setattr(main, "llm", _ChunkedLLM("跟我读一遍：moon！"))
+        monkeypatch.setattr(main, "asr", _FakeASR("moon"))
+        tts = _FakeTTS()
+        tts.spoken = []
+        monkeypatch.setattr(main, "tts", tts)
+        asyncio.run(main.handle_utterance(_FakeWS(), session, None,
+                                          asyncio.Event()))
+        assert session.awaiting == ""
+
+    def test_the_switch_is_remembered_for_the_learner(self, session):
+        session.set_free(True)
+        assert session.store.get_setting(main.FREE_TALK) == "1"
+        session.open_learner("tester")
+        assert session.free and session.free_active()
+
+    def test_toggling_keeps_the_conversation(self, session):
+        session.history.append({"role": "user", "content": "你好"})
+        session.set_free(True)
+        assert session.history
+
+    def test_free_is_offered_only_where_there_is_a_prompt(self, session):
+        modes = {m["name"]: m["free"]
+                 for m in TestClient(main.app).get("/modes").json()["modes"]}
+        assert modes["kid"] and modes["kid_upper"] and not modes["adult"]
+
+    def test_the_page_hears_the_switch_from_the_server(self, tmp_path,
+                                                       monkeypatch):
+        monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(main.speaker, "shared_models",
+                            lambda cfg: (None, None))
+        client = TestClient(main.app)
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "learner", "value": "tester"})
+            assert ws.receive_json() == {"type": "learner", "value": "tester",
+                                         "free": False, "enabled": False}
+            ws.send_json({"type": "free", "value": True})
+            assert ws.receive_json() == {"type": "free", "value": True,
+                                         "available": True}
+            # A mode without a free prompt has nothing to switch to.
+            ws.send_json({"type": "mode", "value": "adult"})
+            assert ws.receive_json() == {"type": "mode", "value": "adult"}
+            assert ws.receive_json() == {"type": "free", "value": True,
+                                         "available": False}
+
+
 class TestEndpoints:
     def test_learners_lists_the_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))

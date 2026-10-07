@@ -147,6 +147,20 @@ SPEAKER_RULES = (
     "to the child. Never treat it as something the child said or practised."
 )
 
+# Free talk has no plan, but once the history is compacted the summary of the
+# earlier talk is still written in brackets at the start of the child's
+# message. It stays in the system prompt for the same reason TEACHING_RULES
+# does: the prompt must not change from turn to turn.
+FREE_RULES = (
+    "Text in brackets at the start of the child's message is a note of what "
+    "was talked about earlier. It is not something the child said, so never "
+    "repeat it and never refer to it."
+)
+
+# Per-learner setting that remembers the free talk switch, so a page opened
+# on the iPad and one on a computer agree.
+FREE_TALK = "free_talk"
+
 web_dir = str(pathlib.Path(__file__).resolve().parent.parent.parent / "web")
 # Mounted after the /ws route is registered (see bottom of this file) so
 # the catch-all static mount cannot shadow it.
@@ -236,6 +250,9 @@ class Session:
         self.turn_barged = False   # confirmed as a real interruption
         self.learner = DEFAULT_LEARNER
         self.store: Store | None = None
+        # Free talk: the child leads and no curriculum word is pushed. It
+        # takes effect only in a mode that has a free prompt.
+        self.free = False
         self.units: list = []
         self.vocab: set[str] = set()
         self.tracked: set[str] = set()
@@ -269,7 +286,32 @@ class Session:
         self.store = Store(learner, data_root())
         self.portrait = profile.load(profile.path_for(data_root(), learner))
         self.speakers = speaker_book(learner)
+        self.free = self.store.get_setting(FREE_TALK, "") == "1"
         self.load_curriculum()
+
+    def free_active(self) -> bool:
+        """Whether this session is in free talk.
+
+        The switch is remembered per learner, but a mode without a free
+        prompt (adult) has nothing to switch to, so the answer depends on
+        both.
+        """
+        return self.free and "free" in cfg["modes"][self.mode]
+
+    def free_prompt(self) -> dict:
+        """The free talk section of the current mode, or an empty one."""
+        return cfg["modes"][self.mode].get("free") or {}
+
+    def set_free(self, value: bool) -> bool:
+        """Turn free talk on or off, remembering it for this learner."""
+        self.free = bool(value)
+        if self.store is not None:
+            self.store.set_setting(FREE_TALK, "1" if self.free else "")
+        # A request to repeat belongs to the lesson, and no lesson is in
+        # progress once the rules have changed: drop it either way.
+        self.awaiting = ""
+        self.read_tries = 0
+        return self.free
 
     def load_curriculum(self):
         """Units and vocabulary of the current mode; no-op without one."""
@@ -302,6 +344,8 @@ class Session:
         self.store = None
 
     def system_prompt(self) -> str:
+        if self.free_active():
+            return self._free_prompt()
         m = cfg["modes"][self.mode]
         text = m["system_prompt"]
         ratio = m.get("english_ratio")
@@ -309,6 +353,22 @@ class Session:
             text += " " + ENGLISH_RATIO_RULE.format(pct=round(float(ratio) * 100))
         if self.units:
             text += " " + TEACHING_RULES
+        if self.speakers is not None and self.speakers.enabled():
+            text += " " + SPEAKER_RULES
+        return " ".join(text.split())
+
+    def _free_prompt(self) -> str:
+        """Prompt for free talk: the mode's free prompt, no teaching rules.
+
+        There is no word being introduced, so TEACHING_RULES would send the
+        tutor looking for words that are not there. The summary of earlier
+        talk still rides in brackets, though, so FREE_RULES explains it,
+        and a parent still has to be recognised.
+        """
+        text = self.free_prompt().get("system_prompt", "") + " " + FREE_RULES
+        ratio = self.free_prompt().get("english_ratio")
+        if ratio is not None:
+            text += " " + ENGLISH_RATIO_RULE.format(pct=round(float(ratio) * 100))
         if self.speakers is not None and self.speakers.enabled():
             text += " " + SPEAKER_RULES
         return " ".join(text.split())
@@ -555,14 +615,14 @@ def build_messages(sess: Session, text: str,
                 + sess.history[-HISTORY_MESSAGES:]
                 + [{"role": "user", "content": PARENT_PREFIX + text}])
     plan = state_block.Plan()
-    if sess.store is not None and sess.units:
+    if sess.store is not None and sess.units and not sess.free_active():
         plan = scheduler.plan(sess.store, sess.units, BLOCK_CAPS, sess.portrait,
                               session_id=sess.session_id,
                               opening=not sess.history,
                               new_per_day=NEW_PER_DAY, turn=sess.turn_count)
     if sess.summary:
         plan = replace(plan, summary=sess.summary)
-    if sess.awaiting:
+    if sess.awaiting and not sess.free_active():
         plan = judge_reading(sess, plan, text)
     sess.plan = plan   # the turn's bookkeeping credits what was asked for
     block = state_block.render(plan, BLOCK_CAPS)
@@ -660,7 +720,10 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
             sess.history.append({"role": "user",
                                  "content": PARENT_PREFIX + text if parent else text})
             sess.history.append({"role": "assistant", "content": reply})
-            if not parent:
+            # Nothing is judged in free talk: whatever invites the child to
+            # say something back is part of the chat, not the start of a
+            # drill, so it must not set off the silence prompt.
+            if not parent and not sess.free_active():
                 note_invitation(sess, reply)
         await send_json(ws, {"type": "reply_done", "marks": marks})
     except Exception as e:  # keep the socket alive; surface the error
@@ -692,7 +755,9 @@ def cancel_nudge(sess: Session) -> None:
 def schedule_nudge(ws: WebSocket, sess: Session) -> None:
     """After a request to repeat, prompt once if the child stays silent."""
     cancel_nudge(sess)
-    if READ_WAIT_S <= 0 or not sess.awaiting or sess.nudged:
+    # Nothing is being drilled in free talk, so silence is never a missed
+    # answer to one.
+    if READ_WAIT_S <= 0 or not sess.awaiting or sess.nudged or sess.free_active():
         return
     sess.nudge_task = asyncio.create_task(nudge_after_wait(ws, sess, sess.awaiting))
 
@@ -825,6 +890,7 @@ async def ws_endpoint(ws: WebSocket):
                     sess.history.clear()
                     sess.load_curriculum()
                     await send_json(ws, {"type": "mode", "value": sess.mode})
+                    await send_json(ws, free_message(sess))
                 elif mtype == "start":
                     if not sess.streaming:
                         sess.streaming = True
@@ -844,8 +910,13 @@ async def ws_endpoint(ws: WebSocket):
                 elif mtype == "learner":
                     value = str(data.get("value", "")).strip() or DEFAULT_LEARNER
                     sess.open_learner(slug(value))
-                    await send_json(ws, {"type": "learner", "value": sess.learner})
-                    await send_json(ws, voiceprint_message(sess))
+                    await send_json(ws, {"type": "learner", "value": sess.learner,
+                                         "free": sess.free,
+                                         "enabled": voiceprint_message(sess)["enabled"]})
+                elif mtype == "free":
+                    cancel_nudge(sess)
+                    sess.set_free(bool(data.get("value")))
+                    await send_json(ws, free_message(sess))
                 elif mtype == "unit":
                     # Empty means "pick for me"; see scheduler.current_unit.
                     value = str(data.get("value", "")).strip()
@@ -880,7 +951,8 @@ async def get_modes():
     return {
         "default": DEFAULT_MODE,
         "modes": [
-            {"name": name, "label": m.get("label", name)}
+            {"name": name, "label": m.get("label", name),
+             "free": bool(m.get("free"))}
             for name, m in cfg["modes"].items()
         ],
     }
@@ -1070,6 +1142,16 @@ def voiceprint_message(sess: Session) -> dict:
     """
     return {"type": "voiceprint", "learner": sess.learner,
             "enabled": bool(sess.speakers and sess.speakers.enabled())}
+
+
+def free_message(sess: Session) -> dict:
+    """State of the free talk switch, for the page's checkbox.
+
+    `available` is false in a mode that has no free prompt, so the page can
+    hide the switch instead of showing one that does nothing.
+    """
+    return {"type": "free", "value": sess.free,
+            "available": "free" in cfg["modes"][sess.mode]}
 
 
 async def reload_speakers(learner: str) -> None:

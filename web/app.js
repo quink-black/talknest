@@ -51,6 +51,12 @@ let sinkWarned = null;   // only warn once per failed target
 
 let avatarHearing = false;   // the child is mid-utterance, not just on-mic
 
+/* Free talk: a per-learner switch on the server, so which modes offer it
+   and whether it is on are both answered by the server, not by a local
+   preference. modeFree comes from GET /modes and only decides whether
+   the switch is shown at all. */
+const modeFree = new Map();   // mode name -> has a free talk prompt
+
 function setStatus(text, busy) {
   $("status").textContent = STATUS_TEXT[text] || text;
   $("statusDot").className = busy ? "dot busy" : "dot idle";
@@ -211,6 +217,16 @@ function syncAvatar() {
   }
 }
 
+/* The switch is only offered in a mode that has a free talk prompt: in the
+   adult mode, which is free talk all the time, it would do nothing. The
+   server decides both facts, so this only mirrors what it said. */
+function setFree(on, available) {
+  const box = $("freeToggle");
+  const label = $("freeLabel");
+  if (box) box.checked = !!on;
+  if (label) label.hidden = !available;
+}
+
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
 function connect() {
@@ -244,6 +260,19 @@ async function onMessage(ev) {
   switch (msg.type) {
     case "mode":
       $("mode").value = msg.value;
+      break;
+    case "free":
+      setFree(msg.value, msg.available);
+      break;
+    case "learner":
+      // Picking a learner is also when the server says whether their
+      // voices are enrolled and whether free talk is on for them. Only
+      // about the learner on screen: a reply that was on its way when the
+      // picker changed describes the previous one.
+      if (msg.value === $("learner").value) {
+        voiceprintOn = !!msg.enabled;
+        setFree(msg.free, modeFree.get($("mode").value) === true);
+      }
       break;
     case "state":
       // A paused session is not listening: the server still reports the
@@ -881,6 +910,14 @@ $("mode").addEventListener("change", (e) => {
   refreshParent();
 });
 
+/* Toggling free talk keeps the conversation: it changes the rules the tutor
+   follows, not what has been said so far, and the child can go on from the
+   topic they were on. */
+$("freeToggle").addEventListener("change", (e) => {
+  setFree(e.target.checked, modeFree.get($("mode").value) === true);
+  send({ type: "free", value: e.target.checked });
+});
+
 $("learner").addEventListener("change", (e) => {
   savePref(PREF_KEY.learner, e.target.value);
   clearTranscript();
@@ -1220,8 +1257,12 @@ async function loadModes() {
       opt.value = m.name;
       opt.textContent = m.label;
       sel.appendChild(opt);
+      modeFree.set(m.name, !!m.free);
     }
     sel.value = data.default;
+    // Hidden until the server says the switch is on for this learner; the
+    // mode only decides whether it can be shown at all.
+    setFree($("freeToggle").checked, modeFree.get(sel.value) === true);
   } catch (e) { /* offline or old server: keep the static options */ }
 }
 

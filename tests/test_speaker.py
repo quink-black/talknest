@@ -580,11 +580,9 @@ class TestVoiceprintNotice:
             client.post(f"/learners/tester/speakers/{role}", content=clip_.tobytes())
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "learner", "value": "tester"})
-            assert ws.receive_json()["type"] == "learner"
-            assert ws.receive_json() == {"type": "voiceprint",
-                                         "learner": "tester", "enabled": True}
+            assert ws.receive_json() == {"type": "learner", "value": "tester",
+                                         "free": False, "enabled": True}
             ws.send_json({"type": "learner", "value": "other"})
-            ws.receive_json()
             assert ws.receive_json()["enabled"] is False
 
     def _open(self, ws_cls):

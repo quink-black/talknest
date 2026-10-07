@@ -34,6 +34,7 @@
   .devices { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-bottom: .4rem; }
   .dev { display: flex; align-items: center; gap: .35rem; font-size: .9rem; color: #555; }
   .dev select { font-size: .9rem; padding: .35rem .6rem; max-width: 250px; }
+  .dev[hidden] { display: none; }
   #deviceHint { margin: 0 0 .9rem; min-height: 1.3em; }
   #banner { display: none; background: #fdf3d7; border: 1px solid #e5c55b;
             border-radius: 8px; padding: .7rem 1rem; margin: 1rem 0;
@@ -192,6 +193,8 @@
       </select>
       <button id="interruptBtn">停下</button>
       <button id="pauseBtn">暂停</button>
+      <label class="dev" id="freeLabel" hidden><input type="checkbox"
+        id="freeToggle"> 自由聊天</label>
       <label class="dev"><input type="checkbox" id="avatarToggle"> 老师形象</label>
     </div>
 
@@ -205,6 +208,10 @@
       <p class="hint">选了单元就只教这个单元的新词（想重复练或跳过都可以），不选
       则按大纲顺序自动往下走。“已会”“重学”是你下的判断，之后自动记录不再改动
       这个词；“自动”把它交回系统。切换“我是谁”或模式会清空当前对话。</p>
+      <p class="hint">“自由聊天”打开后，Sunny 跟着孩子聊：孩子当老师教她读课文时
+      她当学生跟读、提问，偶尔读错一处让孩子纠正；聊生活问题时以中文为主，英文
+      顺着话题出现。打开后不再推送大纲新词，也不再判定跟读，但孩子说出的英文照
+      常记进上面的词表。切换这个开关不会清空当前对话，开关按孩子记住。</p>
     </details>
 
     <details id="voiceprint">

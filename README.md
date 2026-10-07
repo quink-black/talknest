@@ -187,7 +187,17 @@ iPad 上的 WKWebView 只在安全上下文里暴露麦克风。
 
 三种模式的行为（系统提示词）与音色、语言、语速都写在
 `server/config.yaml` 的 `modes` 段，未被覆盖的项取 `tts` 段的全局值，
-因此换音色、换语言只改这一个文件。Qwen3-TTS 0.6B 没有速率参数，可选的
+因此换音色、换语言只改这一个文件。
+
+### 自由聊天开关
+
+`kid` 与 `kid_upper` 可以再带一个 `free` 小节，里面是一份自己的
+`system_prompt`（以及可选的 `english_ratio`）。带了该小节的模式在页面上
+多出一个“自由聊天”开关，切换时不清空对话：打开后以聊天为主，不再推送
+大纲新词、复习词和跟读判定，但孩子说出的英文照旧记为练习，老师顺口教的
+新词照旧记为话题词。开关的状态按学习者记在数据库里，因此 iPad 和电脑
+上看到的是同一个状态。`adult` 本来就是自由对话，不带该小节，页面上也不
+显示这个开关。Qwen3-TTS 0.6B 没有速率参数，可选的
 放慢由 orchestrator 端 WSOLA 变速实现（`server/orchestrator/tts.py`），
 而变速会在语音上产生可闻的伪影，因此默认不启用。
 
@@ -264,9 +274,10 @@ WARNING。比较对象取最接近的一段，因此已经录进去的一段错�
 | `DELETE /learners/{learner}/speakers/{role}` | 清除该角色的全部声纹 |
 | `DELETE /learners/{learner}/speakers/{role}/{clip_id}` | 删除一段录音，`clip_id` 取自 `GET` 返回的 `clips` |
 
-WebSocket 的 `user_text` 事件新增 `speaker` 字段，取值同上。选定学习者以及
-该学习者的声纹发生变化时，服务端发送 `{"type": "voiceprint", "learner": ...,
-"enabled": ...}`，页面据此决定是否显示气泡标签。阈值和开关在
+WebSocket 的 `user_text` 事件新增 `speaker` 字段，取值同上。选定学习者时
+服务端回报的 `learner` 事件带 `enabled` 字段，该学习者的声纹发生变化时
+服务端发送 `{"type": "voiceprint", "learner": ..., "enabled": ...}`，页面
+据此决定是否显示气泡标签。阈值和开关在
 `server/config.yaml` 的 `speaker_id` 一节。识别准确率取决于麦克风和房间，
 也取决于孩子的声音与家长的声音有多接近，因此首次使用时建议先用日常对话
 观察气泡上的标签，再按需要调整 `min_score` 与 `margin`。
