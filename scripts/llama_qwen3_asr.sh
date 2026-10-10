@@ -14,7 +14,10 @@
 # Tunables (override via env):
 #   ASR_PORT        listen port (default 8001)
 #   ASR_HOST        bind address (default 127.0.0.1)
-#   ASR_BIN         llama-server binary (set it in local.env)
+#   ASR_LLAMA_BIN   llama-server binary (set it in local.env). Deliberately
+#                   not ASR_BIN: start_asr.sh already reads that one, and
+#                   it names a vLLM launcher there, so sharing it would
+#                   let a backend switch run the wrong binary.
 #   ASR_GGUF        ASR GGUF (default Q8_0 under the model root)
 #   ASR_MMPROJ      audio projector GGUF (default: the mmproj sibling)
 #   ASR_CTX         context (default 4096)
@@ -42,7 +45,7 @@ MODEL_ROOT="${TALKNEST_MODEL_ROOT:-$(dirname -- "$REPO_ROOT")/model}"
 GGUF_DIR="$MODEL_ROOT/Qwen3-ASR-1.7B-GGUF"
 GGUF="${ASR_GGUF:-$GGUF_DIR/Qwen3-ASR-1.7B-Q8_0.gguf}"
 MMPROJ="${ASR_MMPROJ:-$GGUF_DIR/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf}"
-BIN="${ASR_BIN:-}"
+BIN="${ASR_LLAMA_BIN:-}"
 
 PORT="${ASR_PORT:-8001}"
 HOST="${ASR_HOST:-127.0.0.1}"
@@ -63,7 +66,7 @@ if [ ! -f "$MMPROJ" ]; then
 fi
 if [ ! -x "$BIN" ]; then
     echo "[llama_qwen3_asr] ERROR: no llama-server at ${BIN:-<unset>}." >&2
-    echo "[llama_qwen3_asr] Set ASR_BIN in local.env to the llama-server binary." >&2
+    echo "[llama_qwen3_asr] Set ASR_LLAMA_BIN in local.env to the llama-server binary." >&2
     exit 1
 fi
 
