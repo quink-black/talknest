@@ -18,7 +18,8 @@
 #   TN9B_SLOTS         concurrent slots (default 1; MTP requires np=1)
 #   TN9B_SPEC          speculative type (default draft-mtp, "none" off)
 #   TN9B_SPEC_N_MAX    max draft tokens (default 6, per unsloth guide)
-#   TN9B_NGL           GPU layers (unset = auto-fit to free VRAM)
+#   TN9B_NGL           GPU layers (unset = auto-fit to free VRAM, or all
+#                      of them on macOS; see below)
 #   TN9B_FIT_MARGIN    free-MiB headroom --fit leaves per device (512)
 #   TN9B_THREADS / TN9B_FLASH_ATTN   hardware knobs
 #   TN9B_ALIAS         API model id (default qwen3.5-9b; keep in sync
@@ -58,8 +59,13 @@ API_KEY="${TN9B_API_KEY:-}"
 CTX="${TN9B_CTX:-8192}"
 SLOTS="${TN9B_SLOTS:-1}"
 # Left unset, llama.cpp fits the offloaded layers to whatever VRAM is
-# free; set TN9B_NGL to pin a count instead.
+# free; set TN9B_NGL to pin a count instead. -fit sizes the offload for a
+# card that has to be shared, which is not a constraint unified memory
+# has, so on macOS every layer goes to the GPU by default.
 NGL="${TN9B_NGL:-}"
+if [ -z "$NGL" ] && [ "$(uname -s)" = "Darwin" ]; then
+    NGL=-1
+fi
 FIT_MARGIN="${TN9B_FIT_MARGIN:-512}"
 THREADS="${TN9B_THREADS:-8}"
 FLASH="${TN9B_FLASH_ATTN:-1}"
