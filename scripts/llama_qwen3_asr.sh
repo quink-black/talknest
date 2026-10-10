@@ -37,7 +37,8 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    # Print the header comment block, so edits to it cannot cut -h short.
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
     exit 0
 }
 case "${1:-}" in
