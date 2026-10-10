@@ -44,8 +44,17 @@ ASR 有两个运行时，用 `local.env` 里的 `ASR_BACKEND` 选择：vLLM 只�
 CUDA 卡上跑，Apple Silicon 用 llama.cpp（后者读的是 ggml-org 预转换的
 GGUF 权重，不是 HF 目录）。两者回答同一个 `/v1/audio/transcriptions`
 接口，连 `language English<asr_text>` 这个信封都一样，因此
-orchestrator 不需要随后端改动。TTS 则在启动时自动选择设备：有 CUDA 就用
-CUDA，否则用 MPS，都没有就用 CPU。
+orchestrator 不需要随后端改动。
+
+唯一的差别在强制语言重试。模型自报的语言不在 `asr.languages` 里时，
+`server/orchestrator/asr.py` 会带 `to_language` 再读一遍；llama.cpp 不认
+这个字段，它的 `language` 只是往提示词尾部追加 `(language: en)`，而
+Qwen3-ASR 不理会这个后缀，于是重试拿到的是同一个结果。若文本仍然既不是
+拉丁字母也不是中日韩文字，这一轮就会被丢弃，而不是改用英文或中文重读。
+换后端时值得知道这一点。
+
+TTS 则在启动时自动选择设备：有 CUDA 就用 CUDA，否则用 MPS，都没有就用
+CPU。
 
 轮次切分与打断的机制和调参方法见 [docs/vad-tuning.md](docs/vad-tuning.md)。
 

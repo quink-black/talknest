@@ -11,6 +11,14 @@
 # The weights are ggml-org's pre-converted GGUF, not the HF checkpoint:
 # llama.cpp has no converter for this architecture.
 #
+# One gap against the vLLM backend: nothing in llama.cpp's transcription
+# endpoint forces the output language. It does not read Qwen's
+# to_language, and the language field only appends " (language: X)" to
+# the prompt, which Qwen3-ASR ignores. The orchestrator's forced re-read
+# therefore repeats the unforced request, so an utterance whose script
+# is neither Latin nor CJK is dropped instead of being re-taken in
+# English or Chinese.
+#
 # Tunables (override via env):
 #   ASR_PORT        listen port (default 8001)
 #   ASR_HOST        bind address (default 127.0.0.1)
