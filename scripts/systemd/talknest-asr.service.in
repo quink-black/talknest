@@ -1,5 +1,5 @@
 [Unit]
-Description=talknest ASR (vLLM Qwen3-ASR) on port 8001
+Description=talknest ASR (Qwen3-ASR) on port 8001
 StartLimitIntervalSec=300
 StartLimitBurst=3
 
