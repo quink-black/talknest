@@ -23,18 +23,24 @@ LOG_DIR="$REPO_ROOT/logs"
 mkdir -p "$LOG_DIR"
 
 SERVICES=(asr tts llm web)
-declare -A START=(
-    [asr]="$REPO_ROOT/server/services/start_asr.sh"
-    [tts]="$REPO_ROOT/server/services/start_tts.sh"
-    [llm]="$REPO_ROOT/server/services/start_llm_llamacpp_9b.sh"
-    [web]="$SCRIPT_DIR/start_web.sh"
-)
-declare -A STOP=(
-    [asr]="$REPO_ROOT/server/services/stop_asr.sh"
-    [tts]="$REPO_ROOT/server/services/stop_tts.sh"
-    [llm]="$REPO_ROOT/server/services/stop_llm.sh"
-    [web]="$SCRIPT_DIR/stop_web.sh"
-)
+# bash 3.2, the /bin/bash macOS ships, has no associative arrays, so the
+# per-service tables are case statements rather than maps.
+start_script() {
+    case "$1" in
+        asr) printf '%s\n' "$REPO_ROOT/server/services/start_asr.sh" ;;
+        tts) printf '%s\n' "$REPO_ROOT/server/services/start_tts.sh" ;;
+        llm) printf '%s\n' "$REPO_ROOT/server/services/start_llm_llamacpp_9b.sh" ;;
+        web) printf '%s\n' "$SCRIPT_DIR/start_web.sh" ;;
+    esac
+}
+stop_script() {
+    case "$1" in
+        asr) printf '%s\n' "$REPO_ROOT/server/services/stop_asr.sh" ;;
+        tts) printf '%s\n' "$REPO_ROOT/server/services/stop_tts.sh" ;;
+        llm) printf '%s\n' "$REPO_ROOT/server/services/stop_llm.sh" ;;
+        web) printf '%s\n' "$SCRIPT_DIR/stop_web.sh" ;;
+    esac
+}
 # Services must come up one at a time: llama.cpp -fit sizes the offload to
 # the VRAM that is free *at its own startup*, so starting it before ASR and
 # TTS have claimed their pools makes it grab the whole card and OOM the
@@ -48,12 +54,14 @@ if { [ -n "${TLS_CERT:-}" ] && [ -n "${TLS_KEY:-}" ]; } \
         && [ -f "$REPO_ROOT/certs/dev.key" ]; }; then
     WEB_SCHEME=https
 fi
-declare -A READY=(
-    [asr]="http://127.0.0.1:8001/health"
-    [tts]="http://127.0.0.1:8002/v1/models"
-    [llm]="http://127.0.0.1:9999/health"
-    [web]="${WEB_SCHEME}://127.0.0.1:${TALKNEST_PORT:-8890}/"
-)
+ready_url() {
+    case "$1" in
+        asr) printf '%s\n' "http://127.0.0.1:8001/health" ;;
+        tts) printf '%s\n' "http://127.0.0.1:8002/v1/models" ;;
+        llm) printf '%s\n' "http://127.0.0.1:9999/health" ;;
+        web) printf '%s\n' "${WEB_SCHEME}://127.0.0.1:${TALKNEST_PORT:-8890}/" ;;
+    esac
+}
 READY_TIMEOUT="${TALKNEST_READY_TIMEOUT:-600}"
 
 if [ "$#" -gt 0 ]; then
@@ -84,14 +92,15 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 start_one() {
-    local name="$1" script="${START[$1]}"
+    local name="$1" script
+    script="$(start_script "$name")"
     if [ ! -x "$script" ]; then
         echo "[tmux_start] ERROR: $script is missing or not executable" >&2
         return 1
     fi
     # Free the port even when the service was started outside tmux.
     tmux kill-window -t "$SESSION:$name" 2>/dev/null || true
-    "${STOP[$name]}" >/dev/null 2>&1 || true
+    "$(stop_script "$name")" >/dev/null 2>&1 || true
 
     local log="$LOG_DIR/${name}_$(date +%Y%m%d-%H%M%S).log"
     ln -sfn "$log" "$LOG_DIR/${name}.current.log"
@@ -111,7 +120,8 @@ start_one() {
 # memory the previous one actually took. A service that never comes up
 # stops the sequence instead: continuing would hand the LLM an empty card.
 wait_ready() {
-    local name="$1" url="${READY[$1]:-}" waited=0
+    local name="$1" url waited=0
+    url="$(ready_url "$name")"
     if [ -z "$url" ]; then
         return 0
     fi

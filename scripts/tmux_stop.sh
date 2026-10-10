@@ -13,12 +13,16 @@ REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
 SESSION="${TALKNEST_SESSION:-talknest}"
 
 SERVICES=(asr tts llm web)
-declare -A STOP=(
-    [asr]="$REPO_ROOT/server/services/stop_asr.sh"
-    [tts]="$REPO_ROOT/server/services/stop_tts.sh"
-    [llm]="$REPO_ROOT/server/services/stop_llm.sh"
-    [web]="$SCRIPT_DIR/stop_web.sh"
-)
+# bash 3.2, the /bin/bash macOS ships, has no associative arrays, so the
+# stop-script table is a case statement rather than a map.
+stop_script() {
+    case "$1" in
+        asr) printf '%s\n' "$REPO_ROOT/server/services/stop_asr.sh" ;;
+        tts) printf '%s\n' "$REPO_ROOT/server/services/stop_tts.sh" ;;
+        llm) printf '%s\n' "$REPO_ROOT/server/services/stop_llm.sh" ;;
+        web) printf '%s\n' "$SCRIPT_DIR/stop_web.sh" ;;
+    esac
+}
 
 if [ "$#" -gt 0 ]; then
     SERVICES=("$@")
@@ -26,6 +30,6 @@ fi
 
 for name in "${SERVICES[@]}"; do
     tmux kill-window -t "$SESSION:$name" 2>/dev/null || true
-    "${STOP[$name]}" || true
+    "$(stop_script "$name")" || true
     echo "[tmux_stop] $name stopped"
 done
