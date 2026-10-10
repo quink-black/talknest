@@ -1,4 +1,4 @@
-# LLM VRAM budget: KV cache vs. layers (2026-09-13, black)
+# LLM VRAM budget: KV cache vs. layers (2026-09-13)
 
 Host: x86_64, RTX 3060 12G, i7-12700F. Stack: ASR vLLM fp8 @ 0.36 util,
 TTS qwen-tts sidecar, llama.cpp Qwen3.5-9B Q4_K_M (MTP draft).

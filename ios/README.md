@@ -84,9 +84,9 @@ xcrun devicectl device install app --device <udid> build/Debug-iphoneos/Talknest
 
 ## 使用
 
-- 默认地址是 `https://black.local`（`Sources/AppState.swift` 的
-  `defaultAddress`），打开 app 直接加载它。不写端口默认 8890，不写协议默认
-  https；换机器时在设置页改地址，地址存在本机。
+- 默认地址写在 `Sources/AppState.swift` 的 `defaultAddress`，打开 app 直接
+  加载它。不写端口默认 8890，不写协议默认 https；换机器时在设置页改地址，
+  地址存在本机。
 - 右上角半透明齿轮，或者摇一摇 iPad，可以打开设置页。
 - 连不上服务器时显示中文提示页，可以重试或改地址。
 - iPad 首次访问局域网会弹「本地网络」授权，必须允许，否则 WebSocket 连不上。
