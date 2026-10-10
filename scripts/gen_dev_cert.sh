@@ -12,8 +12,14 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CERT_DIR="$REPO_ROOT/certs"
 mkdir -p "$CERT_DIR"
 
-# Collect LAN IPv4s (best effort) for the SAN list.
-IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n 4)
+# Collect LAN IPv4s (best effort) for the SAN list. macOS hostname has no
+# -I, and the error goes to /dev/null, so its list silently comes back
+# empty and the cert ends up without a SAN an iPad can match.
+if [ "$(uname -s)" = "Darwin" ]; then
+    IPS=$(ifconfig 2>/dev/null | awk '$1 == "inet" && $2 != "127.0.0.1" {print $2}' | head -n 4)
+else
+    IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n 4)
+fi
 SAN="DNS:localhost,IP:127.0.0.1"
 for ip in $IPS; do
     SAN="$SAN,IP:$ip"
