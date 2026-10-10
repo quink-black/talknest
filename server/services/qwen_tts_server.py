@@ -116,9 +116,15 @@ def default_device() -> tuple[str, str]:
 
 _DEFAULT_DEVICE, _DEFAULT_DTYPE = default_device()
 DEVICE = os.environ.get("QWEN_TTS_DEVICE", "").strip() or _DEFAULT_DEVICE
-DTYPE = getattr(
-    torch, os.environ.get("QWEN_TTS_DTYPE", "").strip() or _DEFAULT_DTYPE
-)
+_DTYPE_NAME = os.environ.get("QWEN_TTS_DTYPE", "").strip() or _DEFAULT_DTYPE
+DTYPE = getattr(torch, _DTYPE_NAME, None)
+if DTYPE is None:
+    # A near miss like "bf16" reaches getattr and dies there, with a
+    # traceback that names torch rather than the setting to fix.
+    raise RuntimeError(
+        f"QWEN_TTS_DTYPE={_DTYPE_NAME!r} is not a torch dtype; "
+        "use one of bfloat16, float16, float32"
+    )
 
 app = FastAPI(title="qwen3-tts-sidecar")
 model = Qwen3TTSModel.from_pretrained(MODEL_DIR, device_map=DEVICE, dtype=DTYPE)
