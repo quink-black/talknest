@@ -1,11 +1,12 @@
 """Qwen3-TTS sidecar — OpenAI-compatible /v1/audio/speech endpoint.
 
-Runs the official qwen-tts package (transformers backend, CUDA) in its
-own dedicated venv (venv-tts), because the shared qwen venv cannot hold
+Runs the official qwen-tts package (transformers backend) in its own
+dedicated venv (venv-tts), because the shared qwen venv cannot hold
 qwen-tts (would downgrade transformers) and vLLM online serving for
 Qwen3-TTS is not released yet. The orchestrator sees the same API shape
 as any OpenAI-style TTS server, so swapping runtimes never touches the
-pipeline.
+pipeline. The device follows whatever the machine offers: CUDA, then
+MPS, then CPU.
 
 Two entry points:
 
@@ -26,6 +27,9 @@ Environment:
                       rejected at startup.
   QWEN_TTS_STREAM_FRAMES  codec frames per streamed chunk (default 4,
                       i.e. ~320 ms of audio at 12.5 Hz).
+  QWEN_TTS_DEVICE     device_map passed to from_pretrained; default is
+                      cuda:0 when CUDA is present, else mps, else cpu.
+  QWEN_TTS_DTYPE      torch dtype name, e.g. bfloat16, float16, float32.
 """
 
 import asyncio
@@ -94,12 +98,32 @@ def load_gen_args() -> dict:
 GEN_ARGS = load_gen_args()
 STREAM_FRAMES = max(1, int(os.environ.get("QWEN_TTS_STREAM_FRAMES", "4")))
 
-app = FastAPI(title="qwen3-tts-sidecar")
-model = Qwen3TTSModel.from_pretrained(
-    MODEL_DIR, device_map="cuda:0", dtype=torch.bfloat16
+
+def default_device() -> tuple[str, str]:
+    """Device and dtype name to use when the environment says nothing.
+
+    Both accelerators keep bfloat16, the dtype the shared 12G card was
+    measured with. MPS cannot take float16: the sampler overflows there
+    and rejects its own probability tensor, which the wider bfloat16
+    exponent avoids.
+    """
+    if torch.cuda.is_available():
+        return "cuda:0", "bfloat16"
+    if torch.backends.mps.is_available():
+        return "mps", "bfloat16"
+    return "cpu", "float32"
+
+
+_DEFAULT_DEVICE, _DEFAULT_DTYPE = default_device()
+DEVICE = os.environ.get("QWEN_TTS_DEVICE", "").strip() or _DEFAULT_DEVICE
+DTYPE = getattr(
+    torch, os.environ.get("QWEN_TTS_DTYPE", "").strip() or _DEFAULT_DTYPE
 )
-# One worker: the model is a single GPU-bound object, so concurrency would
-# only interleave requests. The executor exists to keep the blocking
+
+app = FastAPI(title="qwen3-tts-sidecar")
+model = Qwen3TTSModel.from_pretrained(MODEL_DIR, device_map=DEVICE, dtype=DTYPE)
+# One worker: the model is a single device-bound object, so concurrency
+# would only interleave requests. The executor exists to keep the blocking
 # synthesis off the event loop.
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 
