@@ -4,7 +4,9 @@ Talknest 是一个本地部署的英语口语对话练习应用，面向儿童�
 自练两种用途。全部推理都在家庭局域网内完成，语音与文本都不离开本机。
 三个模型同时加载在一张消费级显卡上（实测 RTX 3060 12G），从说完到听见
 回复约 3 秒，显存与延迟的实测数据见
-[docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。
+[docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。Linux 与
+macOS 都能跑：后者用 Apple Silicon 的统一内存，ASR 换成 llama.cpp，
+其余不变。
 
 ## 特性
 
@@ -34,9 +36,16 @@ Talknest 是一个本地部署的英语口语对话练习应用，面向儿童�
 | 环节 | 模型 | 运行时 | 端口 |
 |---|---|---|---|
 | LLM | Qwen3.5-9B MTP GGUF (Q4_K_M) | llama.cpp（`TN9B_BIN_DIR` 指定 build/bin） | 9999 |
-| ASR | Qwen3-ASR-1.7B（**24 kHz 输入**） | vLLM `qwen-asr-serve`（`ASR_VENV` 指定 venv） | 8001 |
+| ASR | Qwen3-ASR-1.7B（**24 kHz 输入**） | vLLM `qwen-asr-serve`（`ASR_VENV` 指定 venv），或 macOS 上的 llama.cpp | 8001 |
 | TTS | Qwen3-TTS-12Hz-0.6B-CustomVoice | qwen-tts 包（专用 `venv-tts/`）+ OpenAI 兼容 sidecar | 8002 |
 | VAD | Silero VAD (ONNX) | orchestrator 内嵌（CPU，流式） | — |
+
+ASR 有两个运行时，用 `local.env` 里的 `ASR_BACKEND` 选择：vLLM 只能在
+CUDA 卡上跑，Apple Silicon 用 llama.cpp（后者读的是 ggml-org 预转换的
+GGUF 权重，不是 HF 目录）。两者回答同一个 `/v1/audio/transcriptions`
+接口，连 `language English<asr_text>` 这个信封都一样，因此
+orchestrator 不需要随后端改动。TTS 则在启动时自动选择设备：有 CUDA 就用
+CUDA，否则用 MPS，都没有就用 CPU。
 
 轮次切分与打断的机制和调参方法见 [docs/vad-tuning.md](docs/vad-tuning.md)。
 
@@ -46,15 +55,18 @@ LLM 可以切换到 Qwen3.8-27B-NVFP4（vLLM）：修改 `server/config.yaml` �
 
 ## 硬件与软件要求
 
-- **NVIDIA GPU**：三个模型加载在同一张 GPU 上，12G 是实测下限。显存
-  预算与各参数的取舍记录在
-  [docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。
-- **Python 3.12 与三个 venv**：`venv/` 运行 orchestrator，安装
+- **GPU**：Linux 上是一张 NVIDIA 卡，三个模型加载在同一张卡上，12G 是
+  实测下限；显存预算与各参数的取舍记录在
+  [docs/bench/llm-vram-fit.md](docs/bench/llm-vram-fit.md)。macOS 上是
+  Apple Silicon 的统一内存，容量比 12G 宽裕得多，因此既不必按显存做预算，
+  也不必为了 `-fit` 保留启动顺序。
+- **Python 3.12 与 venv**：`venv/` 运行 orchestrator，安装
   `server/requirements.txt`；`venv-tts/` 由 qwen-tts 与 transformers
-  独用一套依赖，目的是避免依赖降级；还有一个安装 vLLM 或
-  `qwen-asr-serve` 的 venv，路径由 `ASR_VENV` 指定。
-- **llama.cpp**：需要自行构建，并带上 `-DGGML_CUDA=ON`。可执行文件目录
-  由 `TN9B_BIN_DIR` 指定。
+  独用一套依赖，目的是避免依赖降级。vLLM 路线的 ASR 还需要第三个 venv，
+  路径由 `ASR_VENV` 指定；macOS 用 llama.cpp 跑 ASR，不需要它。
+- **llama.cpp**：需要自行构建，Linux 上带 `-DGGML_CUDA=ON`，macOS 上带
+  `-DGGML_METAL=ON`（Apple 平台默认开启）。可执行文件目录由
+  `TN9B_BIN_DIR` 指定，ASR 用 `ASR_BIN` 指定 `llama-server`。
 - **浏览器**：桌面 Chrome 或 Edge。扬声器跟随麦克风切换依赖
   `AudioContext.setSinkId()`，该接口只有 Chrome 系浏览器提供。在其他
   浏览器中扬声器下拉框禁用，扬声器跟随系统输出。
@@ -68,12 +80,19 @@ LLM 可以切换到 Qwen3.8-27B-NVFP4（vLLM）：修改 `server/config.yaml` �
 ```
 model/
   Qwen3.5-9B-MTP-GGUF/Qwen3.5-9B-Q4_K_M.gguf   LLM（量化后缀 TN9B_QUANT 可换）
-  Qwen3-ASR-1.7B/                               ASR
+  Qwen3-ASR-1.7B/                               ASR（vLLM 路线）
+  Qwen3-ASR-1.7B-GGUF/                          ASR（llama.cpp 路线：
+                                                ggml-org 预转换的 GGUF 与
+                                                mmproj，见 ASR_GGUF）
   Qwen3-TTS-12Hz-0.6B-CustomVoice/              TTS
   Qwen3-TTS-Tokenizer-12Hz/                     TTS 分词器
   silero-vad/silero_vad.onnx                    VAD
   speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx   声纹（可选）
 ```
+
+两个 ASR 目录只按 `ASR_BACKEND` 取一个：vLLM 读 HF 目录，llama.cpp 读
+GGUF 目录。llama.cpp 没有这个架构的转换脚本，所以 GGUF 只能用
+ggml-org 发布的版本。
 
 ## 教学词库
 
@@ -108,10 +127,11 @@ cp local.env.example local.env   # local.env 已被 .gitignore 忽略
 
 ## 运行
 
-共四个服务，启动顺序有意义：先启动 ASR 与 TTS，因为两者各自预留显存；
-LLM 最后启动，llama.cpp 的 `-fit on` 会按剩余显存自动选择卸载层数（想
-固定层数就用 `TN9B_NGL`）。每个服务脚本只负责在前台运行，不管理监督
-方式，因此三种方式任选：
+共四个服务。在 CUDA 卡上启动顺序有意义：先启动 ASR 与 TTS，因为两者
+各自预留显存；LLM 最后启动，llama.cpp 的 `-fit on` 会按剩余显存自动
+选择卸载层数（想固定层数就用 `TN9B_NGL`）。统一内存没有这个约束，
+macOS 上顺序只是习惯，每层都直接上 GPU。每个服务脚本只负责在前台运行，
+不管理监督方式，因此下面三种方式任选：前台、tmux 或 systemd。
 
 ```bash
 # 单独前台跑
@@ -130,7 +150,8 @@ scripts/tmux_start.sh asr tts         # 只重启某几个
 scripts/tmux_stop.sh                  # 停窗口并释放端口
 ```
 
-无人值守常驻使用 systemd 用户单元（崩溃后自动拉起、可开机自启）：
+无人值守常驻在 Linux 上使用 systemd 用户单元（崩溃后自动拉起、可开机
+自启）。macOS 没有 systemd，常驻这一步要用 tmux：
 
 ```bash
 scripts/systemd/install.sh             # 渲染单元到 ~/.config/systemd/user/
