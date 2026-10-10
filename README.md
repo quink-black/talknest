@@ -17,8 +17,9 @@ Talknest 是一个本地部署的英语口语对话练习应用，面向儿童�
 ## 快速开始
 
 **1. 准备依赖。** 安装 Python 3.12，创建两个 venv，再按上表的构建选项自行
-构建 llama.cpp。显存预算与各参数的取舍见
-[docs/architecture.md](docs/architecture.md)：
+构建 llama.cpp。Linux 上若使用默认的 vLLM 路线跑 ASR，还需要第三个 venv，
+并把它的路径填进 `local.env` 的 `ASR_VENV`；用 llama.cpp 跑 ASR 时不需要。
+显存预算与各参数的取舍见 [docs/architecture.md](docs/architecture.md)：
 
 ```bash
 python3.12 -m venv venv     && ./venv/bin/pip install -r server/requirements.txt
@@ -44,6 +45,8 @@ cp local.env.example local.env
 ./venv/bin/python scripts/import_curriculum.py
 ```
 
+释义写在 `server/curriculum/glosses.yaml`，该文件在版本库里，可以直接修改。
+导入脚本从 CC-CEDICT 补充拼音，并生成 `data/curriculum/lexicon.jsonl`。
 跳过这一步应用仍然可以运行，但大纲里的词不再做拼写校验。
 
 **5. 启动。** 下面的命令按依赖顺序启动四个服务，并等待每个服务就绪：
@@ -81,9 +84,8 @@ scripts/gen_dev_cert.sh     # 把输出的 TLS_CERT / TLS_KEY 写进 local.env
 | `kid_upper` | 小学高年级（约 10-12 岁） | 中文对话里自由夹杂短英文句 |
 | `adult` | 成人自练 | 全英文，正常语速；明显卡住时才用中文 |
 
-模式在页面上切换。三档的行为（系统提示词）以及音色、语言、语速都写在
-`server/config.yaml` 的 `modes` 段；某一项没有在 `modes` 段中设置时，取
-`tts` 段的全局值。因此更换音色或语言只需修改这一个文件。
+模式在页面上切换。三档的行为（系统提示词）以及音色、语言、语速都在
+`server/config.yaml` 里修改，见「配置」一节。
 
 ### 自由聊天开关
 

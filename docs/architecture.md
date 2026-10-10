@@ -40,8 +40,9 @@ orchestrator。orchestrator 用流式 VAD 切分轮次，维护会话与模式�
 `asr.languages` 中时，`server/orchestrator/asr.py` 会带上 `to_language`
 重新识别一次。llama.cpp 不支持该字段，它的 `language` 只是在提示词末尾
 追加 `(language: en)`，而 Qwen3-ASR 不理会这个后缀，所以重试得到的仍是
-同一个结果。如果文本既不是拉丁字母也不是中日韩文字，这一轮会被丢弃，
-不会改用英文或中文重新识别。
+同一个结果。这一条经过实测：在 M4 Pro 上对中文语音强制英文，返回的仍是
+中文。因此如果文本既不是拉丁字母也不是中日韩文字，这一轮会被丢弃，不会
+改用英文或中文重新识别。
 
 ## TTS 的设备选择
 
