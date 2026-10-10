@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Start ASR: Qwen3-ASR-1.7B via vLLM on port 8001, in the foreground.
+# Start ASR on port 8001, in the foreground.
 #
-# ASR_GPU_UTIL bounds the pool vLLM grabs for weights plus KV cache; on a
-# 12G card it has to leave room for the LLM and TTS.
+# ASR_BACKEND picks the runtime:
+#   vllm      Qwen3-ASR-1.7B through vLLM. CUDA only: vLLM has no Metal
+#             backend, so this is unavailable on Apple Silicon.
+#   llamacpp  the same recogniser as a GGUF through llama.cpp, which
+#             covers macOS. scripts/llama_qwen3_asr.sh holds the details.
+#
+# vLLM backend: ASR_GPU_UTIL bounds the pool vLLM grabs for weights plus
+# KV cache; on a 12G card it has to leave room for the LLM and TTS.
 #
 # Prefers qwen-asr-serve, which registers Qwen3ASR with the vLLM model
 # registry before delegating to `vllm serve`, and falls back to plain
@@ -13,6 +19,19 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"
 # shellcheck source=../../scripts/local_env.sh
 . "$REPO_ROOT/scripts/local_env.sh"
+
+ASR_BACKEND="${ASR_BACKEND:-vllm}"
+case "$ASR_BACKEND" in
+    llamacpp)
+        exec "$REPO_ROOT/scripts/llama_qwen3_asr.sh"
+        ;;
+    vllm)
+        ;;
+    *)
+        echo "[start_asr] ERROR: ASR_BACKEND must be vllm or llamacpp, got '$ASR_BACKEND'." >&2
+        exit 1
+        ;;
+esac
 
 # The venv is machine-local (it holds vLLM), so it comes from local.env;
 # ASR_BIN can point at a specific binary instead.
