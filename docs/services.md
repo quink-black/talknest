@@ -93,8 +93,9 @@ systemd 里的服务同样生效。某一项缺失时脚本直接报错并提示
 不会猜测路径。
 
 tmux 是个例外：window 继承的是 tmux server 的环境，不是调用者的，因此
-`tmux_start.sh` 另外把 `TALKNEST_`、`ASR_`、`TN9B_`、`QWEN38_`、`TLS_`
-开头的变量用 `-e` 逐个传进去。
+`tmux_start.sh` 另外把 `TALKNEST_`、`ASR_`、`TTS_`、`LLM_`、`TN9B_`、
+`QWEN38_`、`TLS_` 开头的变量用 `-e` 逐个传进去（少一个前缀，命令行上给
+的对应覆盖就会被静默丢掉）。
 
 `TALKNEST_MODEL_ROOT` 是唯一有默认值的变量：未填写时回退到与仓库同级的
 `model/` 目录，`server/orchestrator/config.py` 的 `model_root()` 用同一

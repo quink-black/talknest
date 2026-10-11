@@ -22,11 +22,21 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 SESSION="${TALKNEST_SESSION:-talknest}"
 
+# Whatever order the names were typed in, the services start in the
+# dependency order, and an unknown name is rejected, exactly as in
+# scripts/start.sh: -fit sizes the LLM offload to the VRAM that is free
+# when the LLM starts, so the LLM has to come after ASR and TTS.
 if [ "$#" -gt 0 ]; then
-    SERVICES=("$@")
+    if ! ordered="$(tn_order_services "$@")"; then
+        exit 2
+    fi
 else
-    SERVICES=("${TN_SERVICES[@]}")
+    ordered="$(tn_order_services)"
 fi
+SERVICES=()
+while IFS= read -r name; do
+    SERVICES+=("$name")
+done <<< "$ordered"
 
 # A tmux window closes as soon as the service pipeline exits, so the
 # window's existence, not a PID, says whether the service is still coming
@@ -45,7 +55,7 @@ tn_service_alive() {
 TMUX_ENV=()
 while IFS='=' read -r name value; do
     TMUX_ENV+=( -e "$name=$value" )
-done < <(env | grep -E '^(TALKNEST_|ASR_|TN9B_|QWEN38_|TLS_)' || true)
+done < <(env | grep -E '^(TALKNEST_|ASR_|TTS_|LLM_|TN9B_|QWEN38_|TLS_)' || true)
 
 # Services running under systemd would fight for the ports: the stop
 # scripts below fuser-kill them into Restart=on-failure loops. Stop the

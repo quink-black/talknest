@@ -14,8 +14,16 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/services.sh
 . "$SCRIPT_DIR/lib/services.sh"
 
+# Reject an unknown name rather than reporting it as stopped: an empty
+# stop script looked like a no-op that succeeded.
 if [ "$#" -gt 0 ]; then
-    SERVICES=("$@")
+    if ! ordered="$(tn_order_services "$@")"; then
+        exit 2
+    fi
+    SERVICES=()
+    while IFS= read -r name; do
+        SERVICES+=("$name")
+    done <<< "$ordered"
 else
     SERVICES=("${TN_SERVICES[@]}")
 fi

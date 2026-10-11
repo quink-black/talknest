@@ -52,7 +52,7 @@ cp local.env.example local.env
 **5. 启动。** 下面的命令按依赖顺序启动四个服务，并等待每个服务就绪：
 
 ```bash
-scripts/tmux_start.sh
+scripts/start.sh
 ```
 
 **6. 打开界面。** 浏览器只在安全上下文中开放麦克风，因此通过局域网访问时
