@@ -5,8 +5,8 @@
 
 ## 启动脚本
 
-每个启动脚本只负责在前台运行一个服务，不关心自己被谁监督，所以前台、
-tmux、systemd 三种方式任选：
+每个启动脚本只负责在前台运行一个服务，不关心自己被谁监督，所以前台单跑、
+`scripts/start.sh`、tmux、systemd 四种方式任选：
 
 | 服务 | 启动脚本 | 端口 |
 |---|---|---|
@@ -20,19 +20,28 @@ llama.cpp 的 `-fit on` 会按启动那一刻剩余的显存选择卸载层数�
 就用 `TN9B_NGL`）。统一内存没有这个约束，macOS 上顺序只是习惯，每层都
 直接上 GPU。
 
-## 三种监督方式
+## 四种监督方式
 
-**前台。** 直接执行上表的脚本，适合临时调试。
+**前台。** 直接执行上表的脚本，适合临时调试单个服务。
 
-**tmux。** `scripts/tmux_start.sh` 起一个 session，每服务一个 window，按
-依赖顺序拉起并等各自的健康检查通过再起下一个；某个服务起不来就停下，
-不会继续把后面的服务带到没有显存的卡上。输出 tee 到
-`logs/<service>.current.log`。`scripts/tmux_stop.sh` 关窗口并释放端口。
+**一条命令（`scripts/start.sh`，默认方式）。** 按依赖顺序拉起并等各自的健
+康检查通过再起下一个；某个服务起不来就停下，不会继续把后面的服务带到没有
+显存的卡上。默认模式把每个服务的输出写入 `logs/<service>.current.log`，
+并在当前终端合并跟随，Ctrl-C 停止本次启动的全部服务；`-d` 在就绪后打印每
+个服务的 PID、健康地址与日志路径并退出，进程脱离终端继续运行，关闭终端不
+影响它们。这一条路径不依赖 tmux。
+
+**tmux。** `scripts/tmux_start.sh` 起一个 session，每服务一个 window，顺
+序与健康检查同上，输出 tee 到 `logs/<service>.current.log`。想分开观察每
+个服务的输出时用；没有装 tmux 也不影响上面两种方式。
 
 **systemd（仅 Linux）。** `scripts/systemd/install.sh` 把四个单元渲染到
 `~/.config/systemd/user/`，`scripts/systemd/services.sh` 做
 start / stop / restart / status。日志走 journald。macOS 没有 systemd，
-常驻这一步用 tmux。
+常驻这一步用 `scripts/start.sh -d`。
+
+三种方式可以互换：两种启动脚本都会先停掉正在运行的 systemd 单元，
+`scripts/stop.sh` 也覆盖三种方式收尾。不要同时运行，端口只有一个。
 
 两条 systemd 细节值得知道：
 
@@ -42,13 +51,16 @@ start / stop / restart / status。日志走 journald。macOS 没有 systemd，
 - 修改 TLS 配置、修改端口或移动 checkout 之后要重新运行 `install.sh`，
   因为 web 健康检查的 URL 在渲染单元时已经固定。
 
-两种监督方式可以随时互换，因为两者都会先停掉另一方式的实例，但不要同时
-运行。
-
 ## 停止
 
+`scripts/stop.sh [服务...]`（默认全部）依次做三件事，每一步对不存在的对象
+都是空操作：停止处于 active 的 systemd 单元、关掉对应的 tmux window、按端
+口回收进程。单元放在第一步，是因为先杀端口上的进程只会触发单元的
+`Restart=on-failure`，与重启争夺同一个端口。因此停止与启动方式无关，一条
+命令覆盖上面三种方式。
+
 `server/services/stop_{asr,tts,llm}.sh` 与 `scripts/stop_web.sh` 按端口
-回收进程，与该服务在哪里启动无关。四者共用 `scripts/free_port.sh`：它用
+回收单个服务，也可以单独执行。四者共用 `scripts/free_port.sh`：它用
 `lsof -nP -iTCP:<port> -sTCP:LISTEN -t` 找出监听者并 SIGKILL，之后复查
 端口是否真的空了，没空就报错退出。
 
@@ -60,7 +72,8 @@ start / stop / restart / status。日志走 journald。macOS 没有 systemd，
 
 ## 日志
 
-- tmux 模式下每个服务 tee 到 `logs/<service>.current.log`。
+- `scripts/start.sh` 与 tmux 模式下每个服务写 `logs/<service>.current.log`
+  （带时间戳的那一份的符号链接）。
 - LLM 的 llama.cpp 输出另外 tee 一份到 `logs/llama_qwen35_9b_<quant>_<时间戳>.log`，
   `logs/llama.current.log` 指向最新一份。
 - systemd 模式下用 `journalctl --user -u talknest-<服务> -f`。

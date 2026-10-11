@@ -5,8 +5,9 @@
 #
 # With no service names, every service is acted on. start clears any
 # running instance of the selected services first -- both the units
-# themselves and a tmux-mode session -- because the two modes must not
-# share one port, then starts the units in one transaction so the
+# themselves and anything started by scripts/start.sh or tmux, through
+# scripts/stop.sh -- because the modes must not share one port, then
+# starts the units in one transaction so the
 # After= health gates order them (LLM last). Stopping ASR or TTS also
 # stops the LLM unit (Requires=), but never the orchestrator.
 #
@@ -68,7 +69,7 @@ case "$ACTION" in
         systemctl --user stop "${units[@]}" >/dev/null 2>&1 || true
         systemctl --user reset-failed "${units[@]}" >/dev/null 2>&1 || true
         # Free the ports from a tmux-mode (or manual) instance.
-        "$REPO_ROOT/scripts/tmux_stop.sh" "${SERVICES[@]}" >/dev/null 2>&1 || true
+        "$REPO_ROOT/scripts/stop.sh" "${SERVICES[@]}" >/dev/null 2>&1 || true
         systemctl --user start "${units[@]}"
         ;;
     stop)
@@ -77,7 +78,7 @@ case "$ACTION" in
     restart)
         systemctl --user stop "${units[@]}" >/dev/null 2>&1 || true
         systemctl --user reset-failed "${units[@]}" >/dev/null 2>&1 || true
-        "$REPO_ROOT/scripts/tmux_stop.sh" "${SERVICES[@]}" >/dev/null 2>&1 || true
+        "$REPO_ROOT/scripts/stop.sh" "${SERVICES[@]}" >/dev/null 2>&1 || true
         systemctl --user start "${units[@]}"
         ;;
     status)

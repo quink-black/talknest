@@ -184,16 +184,33 @@ orchestrator 即可生效。
 四个服务：ASR（:8001）、TTS（:8002）、LLM（:9999）、界面（:8890）。
 
 ```bash
-scripts/tmux_start.sh                 # 启动全部服务，按依赖顺序等待就绪
-scripts/tmux_start.sh asr tts         # 只重启指定的服务
-scripts/tmux_stop.sh                  # 关闭 tmux 窗口并释放端口
+scripts/start.sh                  # 启动全部服务，按依赖顺序等待就绪
+scripts/start.sh -d               # 同上，就绪后脚本退出，服务留在后台
+scripts/start.sh asr tts          # 只启动指定的服务
+scripts/stop.sh                   # 停止全部服务
+```
+
+`scripts/start.sh` 不依赖 tmux。默认把每个服务的输出写入
+`logs/<服务>.current.log`，并在当前终端合并跟随，Ctrl-C 停止本次启动的全部
+服务；`-d` 在就绪后打印每个服务的 PID、健康地址与日志路径并退出，进程脱离
+终端继续运行。
+
+停止命令与启动方式无关：`scripts/stop.sh` 依次停掉处于运行状态的 systemd
+单元、关掉对应的 tmux window、按端口回收进程，因此三种启动方式都用同一条
+命令收尾。
+
+想让每个服务各占一个窗口时再用 tmux：
+
+```bash
+scripts/tmux_start.sh             # 一个 session，每服务一个 window
+tmux attach -t talknest
 ```
 
 每个服务也可以在前台单独运行（`server/services/start_{asr,tts}.sh`、
 `server/services/start_llm_llamacpp_9b.sh`、`scripts/start_web.sh`），
 并用对应的 `stop_*.sh` 停止。Linux 上还可以用 systemd 用户单元实现无人值守
 的常驻运行（`scripts/systemd/install.sh` 与 `scripts/systemd/services.sh`）。
-macOS 没有 systemd，常驻运行使用 tmux。
+macOS 没有 systemd，常驻运行使用 `scripts/start.sh -d`。
 
 启动顺序、日志位置、健康检查与 systemd 单元的依赖关系见
 [docs/services.md](docs/services.md)。
