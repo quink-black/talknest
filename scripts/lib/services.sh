@@ -113,6 +113,38 @@ tn_wait_ready() {
     return 1
 }
 
+# Put the requested service names back in the dependency order and reject
+# unknown ones, so a supervisor never starts the LLM before ASR and TTS
+# have claimed their pools. Prints one name per line; no argument means
+# every service.
+# Usage: tn_order_services [name ...]
+tn_order_services() {
+    local want req known
+    for req in "$@"; do
+        known=0
+        for want in "${TN_SERVICES[@]}"; do
+            if [ "$req" = "$want" ]; then
+                known=1
+            fi
+        done
+        if [ "$known" -eq 0 ]; then
+            tn_log "ERROR: unknown service '$req' (${TN_SERVICES[*]})" >&2
+            return 1
+        fi
+    done
+    if [ "$#" -eq 0 ]; then
+        printf '%s\n' "${TN_SERVICES[@]}"
+        return 0
+    fi
+    for want in "${TN_SERVICES[@]}"; do
+        for req in "$@"; do
+            if [ "$req" = "$want" ]; then
+                printf '%s\n' "$want"
+            fi
+        done
+    done
+}
+
 # Services running under systemd would fight for the ports: killing the
 # listener pushes the units into their Restart=on-failure loop, so stop
 # the units cleanly first. A no-op when none are running.

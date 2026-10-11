@@ -49,11 +49,20 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+# Whatever order the names were typed in, the services start in the
+# dependency order: -fit sizes the LLM offload to the VRAM that is free
+# when the LLM starts, so the LLM has to come after ASR and TTS.
 if [ "${#REQUESTED[@]}" -gt 0 ]; then
-    SERVICES=("${REQUESTED[@]}")
+    if ! ordered="$(tn_order_services "${REQUESTED[@]}")"; then
+        exit 2
+    fi
 else
-    SERVICES=("${TN_SERVICES[@]}")
+    ordered="$(tn_order_services)"
 fi
+SERVICES=()
+while IFS= read -r name; do
+    SERVICES+=("$name")
+done <<< "$ordered"
 
 STARTED=()
 PIDS=()
@@ -162,8 +171,9 @@ follow() {
 }
 
 # Services under systemd would fight for the ports; a no-op when none of
-# the units is running.
-tn_stop_systemd_units
+# the named units is running. Only the services being taken over are
+# stopped: `start.sh web` must not pull the ASR, TTS and LLM units down.
+tn_stop_systemd_units "${SERVICES[@]}"
 
 for name in "${SERVICES[@]}"; do
     if ! start_one "$name"; then
