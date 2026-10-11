@@ -49,8 +49,10 @@ done < <(env | grep -E '^(TALKNEST_|ASR_|TN9B_|QWEN38_|TLS_)' || true)
 
 # Services running under systemd would fight for the ports: the stop
 # scripts below fuser-kill them into Restart=on-failure loops. Stop the
-# units cleanly first; a no-op when none are running.
-tn_stop_systemd_units
+# units cleanly first; a no-op when none are running. Only the services
+# being taken over are stopped: replacing one window must not pull the
+# other units down.
+tn_stop_systemd_units "${SERVICES[@]}"
 
 start_one() {
     local name="$1" script log cmd
