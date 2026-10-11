@@ -127,7 +127,7 @@ Ctrl-C 只到达那个命令，脚本的 trap 反而永远不执行：这一点�
 # 未安装 tmux 的机器上（可用 PATH 剔除 tmux 模拟）
 scripts/start.sh asr tts          # 顺序拉起，日志跟随，Ctrl-C 停全部
 scripts/start.sh -d               # 打印 PID 与 URL 后退出
-curl -fsS http://127.0.0.1:8001/health    # 关闭终端后仍然应答
+curl -fsS http://127.0.0.1:8891/health    # 关闭终端后仍然应答
 scripts/stop.sh                   # 四个端口都释放
 scripts/tmux_start.sh             # 行为与改造前一致
 scripts/tmux_start.sh llm         # 单独替换一个 window 仍可用

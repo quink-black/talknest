@@ -10,13 +10,13 @@
 #             additionally needs `loginctl enable-linger $USER`;
 #             attempted here, printed when it needs authorization.
 #
-# Re-run after moving the checkout or changing the TLS setup or
-# TALKNEST_PORT: the web health URL is baked in at render time.
+# Re-run after moving the checkout or changing the TLS setup or any port:
+# the health URLs are baked in at render time.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"
-# shellcheck source=../../scripts/local_env.sh
-. "$REPO_ROOT/scripts/local_env.sh"
+# shellcheck source=../../scripts/ports.sh
+. "$REPO_ROOT/scripts/ports.sh"
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNITS=(asr tts llm web)
@@ -35,7 +35,8 @@ if { [ -n "${TLS_CERT:-}" ] && [ -n "${TLS_KEY:-}" ]; } \
         && [ -f "$REPO_ROOT/certs/dev.key" ]; }; then
     WEB_SCHEME=https
 fi
-WEB_HEALTH_URL="${WEB_SCHEME}://127.0.0.1:${TALKNEST_PORT:-8890}/"
+WEB_HEALTH_URL="${WEB_SCHEME}://127.0.0.1:${TALKNEST_PORT}/"
+echo "[install] ports: orchestrator ${TALKNEST_PORT}, asr ${ASR_PORT}, tts ${TTS_PORT}, llm ${LLM_PORT}"
 
 declare -A START=(
     [asr]="$REPO_ROOT/server/services/start_asr.sh"
@@ -57,6 +58,9 @@ for name in "${UNITS[@]}"; do
     sed -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
         -e "s|@CURL@|$CURL|g" \
         -e "s|@WEB_HEALTH_URL@|$WEB_HEALTH_URL|g" \
+        -e "s|@ASR_PORT@|$ASR_PORT|g" \
+        -e "s|@TTS_PORT@|$TTS_PORT|g" \
+        -e "s|@LLM_PORT@|$LLM_PORT|g" \
         "$SCRIPT_DIR/talknest-$name.service.in" > "$dst"
     unit_files+=("$dst")
     echo "[install] wrote $dst"

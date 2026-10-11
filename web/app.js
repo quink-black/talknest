@@ -693,7 +693,8 @@ function checkSecureContext() {
     "add <code>" + location.origin + "</code>, enable and relaunch.<br>" +
     "2. Or serve over TLS: run <code>scripts/gen_dev_cert.sh</code>, then " +
     "<code>TLS_CERT=certs/dev.pem TLS_KEY=certs/dev.key scripts/run_server.sh</code> " +
-    "and reload via https://" + location.hostname + ":8890 (accept the warning)."
+    "and reload via https://" + location.hostname + ":" + location.port +
+    " (accept the warning)."
   );
   setStatus("mic blocked (insecure context)", false);
 }

@@ -1,5 +1,5 @@
 [Unit]
-Description=talknest LLM (llama.cpp Qwen3.5-9B) on port 9999
+Description=talknest LLM (llama.cpp Qwen3.5-9B) on port @LLM_PORT@
 # Requires= + After=: never activate while ASR or TTS is still starting
 # or has failed -- llama.cpp -fit sizes the offload to whatever VRAM is
 # free at its own startup and would otherwise grab the whole card. A
@@ -15,7 +15,7 @@ StartLimitBurst=3
 Type=simple
 WorkingDirectory=@REPO_ROOT@
 ExecStart=@REPO_ROOT@/server/services/start_llm_llamacpp_9b.sh
-ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:9999/health >/dev/null 2>&1; do sleep 2; done'
+ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:@LLM_PORT@/health >/dev/null 2>&1; do sleep 2; done'
 TimeoutStartSec=300
 Restart=on-failure
 RestartSec=10

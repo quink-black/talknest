@@ -1,4 +1,10 @@
-"""Config loading (server/config.yaml) with env override."""
+"""Config loading (server/config.yaml) with env override.
+
+The YAML may write shell-style placeholders such as
+``http://127.0.0.1:${ASR_PORT}/v1``; they expand from the environment on
+load, so the backend URLs follow scripts/ports.sh instead of repeating
+the port numbers. A variable that is not exported is left as written.
+"""
 
 import os
 from pathlib import Path
@@ -46,4 +52,4 @@ def load() -> dict:
     if path is None:
         raise RuntimeError("config.yaml not found; set TALKNEST_CONFIG")
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(os.path.expandvars(f.read()))

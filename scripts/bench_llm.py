@@ -14,6 +14,7 @@ Usage:
 import argparse
 import datetime
 import json
+import os
 import platform
 import statistics
 import time
@@ -109,7 +110,8 @@ def dialog_e2e(client, base_url, model):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", default="http://127.0.0.1:9999/v1")
+    ap.add_argument("--base-url",
+                    default=f"http://127.0.0.1:{os.environ.get('LLM_PORT', 8893)}/v1")
     ap.add_argument("--model", default="qwen3.5-9b")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--out", default="docs/bench/m1-llm.md")

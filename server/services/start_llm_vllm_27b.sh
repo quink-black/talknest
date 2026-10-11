@@ -9,12 +9,13 @@
 #
 # After this server is up, set llm.active: vllm-qwen38-27b in
 # server/config.yaml. Unified memory rule: stop the 9B first
-# (stop_llm.sh) -- the two share port 9999 and the same VRAM.
+# (stop_llm.sh) -- the two share the LLM slot and the same VRAM. The
+# external launcher picks its own listen port, so point LLM_PORT at it.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"
-# shellcheck source=../../scripts/local_env.sh
-. "$REPO_ROOT/scripts/local_env.sh"
+# shellcheck source=../../scripts/ports.sh
+. "$REPO_ROOT/scripts/ports.sh"
 # Both live outside the repo, so local.env is where they come from.
 RUN_QWEN38="${RUN_QWEN38:-}"
 MODEL_ROOT="${TALKNEST_MODEL_ROOT:-$(dirname -- "$REPO_ROOT")/model}"

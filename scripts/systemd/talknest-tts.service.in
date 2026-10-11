@@ -1,5 +1,5 @@
 [Unit]
-Description=talknest TTS (Qwen3-TTS sidecar) on port 8002
+Description=talknest TTS (Qwen3-TTS sidecar) on port @TTS_PORT@
 StartLimitIntervalSec=300
 StartLimitBurst=3
 
@@ -7,7 +7,7 @@ StartLimitBurst=3
 Type=simple
 WorkingDirectory=@REPO_ROOT@
 ExecStart=@REPO_ROOT@/server/services/start_tts.sh
-ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:8002/v1/models >/dev/null 2>&1; do sleep 2; done'
+ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:@TTS_PORT@/v1/models >/dev/null 2>&1; do sleep 2; done'
 TimeoutStartSec=120
 Restart=on-failure
 RestartSec=10

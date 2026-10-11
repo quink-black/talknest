@@ -14,6 +14,11 @@ REPO_ROOT="$(dirname -- "$SCRIPTS_DIR")"
 
 # shellcheck source=../local_env.sh
 . "$SCRIPTS_DIR/local_env.sh"
+# The health URLs and the port the stop scripts free come from the same
+# table the services themselves bind, so a port moved in local.env is
+# followed here instead of being hardcoded a second time.
+# shellcheck source=../ports.sh
+. "$SCRIPTS_DIR/ports.sh"
 
 # The dependency order: ASR and TTS claim their VRAM pools first, because
 # llama.cpp -fit sizes the LLM offload to whatever is free when the LLM
@@ -61,10 +66,10 @@ tn_web_scheme() {
 
 tn_ready_url() {
     case "$1" in
-        asr) printf '%s\n' "http://127.0.0.1:8001/health" ;;
-        tts) printf '%s\n' "http://127.0.0.1:8002/v1/models" ;;
-        llm) printf '%s\n' "http://127.0.0.1:9999/health" ;;
-        web) printf '%s\n' "$(tn_web_scheme)://127.0.0.1:${TALKNEST_PORT:-8890}/" ;;
+        asr) printf '%s\n' "http://127.0.0.1:${ASR_PORT}/health" ;;
+        tts) printf '%s\n' "http://127.0.0.1:${TTS_PORT}/v1/models" ;;
+        llm) printf '%s\n' "http://127.0.0.1:${LLM_PORT}/health" ;;
+        web) printf '%s\n' "$(tn_web_scheme)://127.0.0.1:${TALKNEST_PORT}/" ;;
     esac
 }
 

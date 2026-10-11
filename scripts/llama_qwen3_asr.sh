@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Foreground launcher for llama.cpp serving Qwen3-ASR (talknest ASR).
 #
-# Serves the OpenAI-compatible transcription endpoint on 127.0.0.1:8001.
+# Serves the OpenAI-compatible transcription endpoint on 127.0.0.1 on the
+# ASR port (see scripts/ports.sh).
 # This is the macOS route: vLLM has no Metal backend, and with it the
 # --gpu-memory-utilization and fp8 path in start_asr.sh is unavailable.
 # llama.cpp ships a Qwen3-ASR audio encoder and answers the same
@@ -20,7 +21,8 @@
 # English or Chinese.
 #
 # Tunables (override via env):
-#   ASR_PORT        listen port (default 8001)
+#   ASR_PORT        listen port (default: TALKNEST_PORT + 1, i.e. 8891
+#                   with the default orchestrator port)
 #   ASR_HOST        bind address (default 127.0.0.1)
 #   ASR_LLAMA_BIN   llama-server binary (set it in local.env). Deliberately
 #                   not ASR_BIN: start_asr.sh already reads that one, and
@@ -47,8 +49,8 @@ esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
-# shellcheck source=local_env.sh
-. "$SCRIPT_DIR/local_env.sh"
+# shellcheck source=ports.sh
+. "$SCRIPT_DIR/ports.sh"
 
 MODEL_ROOT="${TALKNEST_MODEL_ROOT:-$(dirname -- "$REPO_ROOT")/model}"
 GGUF_DIR="$MODEL_ROOT/Qwen3-ASR-1.7B-GGUF"
@@ -56,7 +58,7 @@ GGUF="${ASR_GGUF:-$GGUF_DIR/Qwen3-ASR-1.7B-Q8_0.gguf}"
 MMPROJ="${ASR_MMPROJ:-$GGUF_DIR/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf}"
 BIN="${ASR_LLAMA_BIN:-}"
 
-PORT="${ASR_PORT:-8001}"
+PORT="$ASR_PORT"
 HOST="${ASR_HOST:-127.0.0.1}"
 CTX="${ASR_CTX:-4096}"
 NGL="${ASR_NGL:--1}"

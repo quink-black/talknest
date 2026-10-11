@@ -10,10 +10,15 @@
 
 | 服务 | 启动脚本 | 端口 |
 |---|---|---|
-| ASR | `server/services/start_asr.sh` | 8001 |
-| TTS | `server/services/start_tts.sh` | 8002 |
-| LLM | `server/services/start_llm_llamacpp_9b.sh` | 9999 |
-| 界面 | `scripts/start_web.sh` | 8890 |
+| 界面 | `scripts/start_web.sh` | `TALKNEST_PORT`（默认 8890） |
+| ASR | `server/services/start_asr.sh` | `ASR_PORT`（默认 8891） |
+| TTS | `server/services/start_tts.sh` | `TTS_PORT`（默认 8892） |
+| LLM | `server/services/start_llm_llamacpp_9b.sh` | `LLM_PORT`（默认 8893） |
+
+四个端口是一段连续的块，起点就是界面的端口：三个后端各占它后面一个端口
+（`scripts/ports.sh` 是唯一的定义处，每个端口都能在 `local.env` 里单独覆
+盖）。改 `TALKNEST_PORT` 整块跟着移动，改其中某一个只钉住那个服务。三个
+后端只监听 `127.0.0.1`，所以对外只需要放开界面的那一个端口。
 
 在 CUDA 卡上启动顺序有意义：ASR 与 TTS 各自预留显存，LLM 最后启动，
 llama.cpp 的 `-fit on` 会按启动那一刻剩余的显存选择卸载层数（想固定层数
@@ -49,7 +54,7 @@ start / stop / restart / status。日志走 journald。macOS 没有 systemd，
   不会启动，这条依赖保护的是 `-fit` 所要求的显存分配顺序。显式停止 ASR
   或 TTS 会连带停止 LLM，但不会停止 orchestrator。
 - 修改 TLS 配置、修改端口或移动 checkout 之后要重新运行 `install.sh`，
-  因为 web 健康检查的 URL 在渲染单元时已经固定。
+  因为各单元的健康检查 URL 在渲染时就写死了端口和协议。
 
 ## 停止
 
@@ -60,7 +65,8 @@ start / stop / restart / status。日志走 journald。macOS 没有 systemd，
 命令覆盖上面三种方式。
 
 `server/services/stop_{asr,tts,llm}.sh` 与 `scripts/stop_web.sh` 按端口
-回收单个服务，也可以单独执行。四者共用 `scripts/free_port.sh`：它用
+回收单个服务，也可以单独执行。端口取自 `scripts/ports.sh`，因此与
+`local.env` 里的覆盖一致。四者共用 `scripts/free_port.sh`：它用
 `lsof -nP -iTCP:<port> -sTCP:LISTEN -t` 找出监听者并 SIGKILL，之后复查
 端口是否真的空了，没空就报错退出。
 

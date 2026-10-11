@@ -18,7 +18,7 @@ Synthesis is the largest single term in the reply latency, and the
 non-streaming endpoint cannot hand over a single sample until the last
 frame exists. The streaming one emits audio a few frames at a time.
 
-Run via server/services/start_tts.sh (:8002).
+Run via server/services/start_tts.sh (the TTS port; see scripts/ports.sh).
 
 Environment:
   QWEN_TTS_GEN_ARGS   JSON object of generation arguments forwarded to

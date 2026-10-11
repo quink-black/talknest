@@ -1,5 +1,5 @@
 [Unit]
-Description=talknest ASR (Qwen3-ASR) on port 8001
+Description=talknest ASR (Qwen3-ASR) on port @ASR_PORT@
 StartLimitIntervalSec=300
 StartLimitBurst=3
 
@@ -10,7 +10,7 @@ ExecStart=@REPO_ROOT@/server/services/start_asr.sh
 # Part of activation: dependents ordered with After= wait for this gate,
 # not just for the fork, so the LLM only sizes its -fit offload after
 # vLLM has actually claimed its VRAM pool.
-ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:8001/health >/dev/null 2>&1; do sleep 2; done'
+ExecStartPost=/bin/sh -c 'until @CURL@ -fsS --max-time 3 http://127.0.0.1:@ASR_PORT@/health >/dev/null 2>&1; do sleep 2; done'
 TimeoutStartSec=600
 Restart=on-failure
 RestartSec=10

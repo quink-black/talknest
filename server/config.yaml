@@ -3,20 +3,25 @@
 # corresponding service (see server/services/). Both profiles expose the
 # OpenAI chat-completions API, so orchestrator code is backend-agnostic.
 
+# Every ${...} below expands from the environment when this file is read,
+# so the backend URLs follow scripts/ports.sh: set ASR_PORT / TTS_PORT /
+# LLM_PORT in local.env and both the server and the orchestrator move with
+# them. Run through scripts/run_server.sh (or export the ports yourself),
+# otherwise the placeholders stay literal.
 server:
   host: 0.0.0.0        # LAN-visible so the Mac browser can connect; HTTPS
-  port: 8890           # 8000-8005 reserved on this host, 9999/8001/8002 taken
+  port: ${TALKNEST_PORT}   # informational: run_server.sh binds the port
 
 llm:
   active: llamacpp-qwen35-9b
   profiles:
     llamacpp-qwen35-9b:
-      base_url: http://127.0.0.1:9999/v1
+      base_url: http://127.0.0.1:${LLM_PORT}/v1
       model: qwen3.5-9b
       api_key: ""
       history_messages: 20    # turns kept in the prompt; see teaching.block
     vllm-qwen38-27b:
-      base_url: http://127.0.0.1:9999/v1
+      base_url: http://127.0.0.1:${LLM_PORT}/v1
       model: qwen3.8-27b-nvfp4
       api_key: ""
       history_messages: 40
@@ -28,7 +33,7 @@ llm:
     max_tokens: 300    # voice replies must stay short
 
 asr:
-  base_url: http://127.0.0.1:8001/v1
+  base_url: http://127.0.0.1:${ASR_PORT}/v1
   model: Qwen3-ASR-1.7B
   # Languages the child can be speaking, ISO 639-1 in the order they are
   # tried. Qwen3-ASR names the language itself and on a one-syllable word
@@ -38,10 +43,10 @@ asr:
   languages: [en, zh]
 
 tts:
-  base_url: http://127.0.0.1:8002/v1
+  base_url: http://127.0.0.1:${TTS_PORT}/v1
   model: Qwen3-TTS-0.6B-CustomVoice
   voice: Serena        # warm, gentle young female voice; see /v1/speakers
-                       # on :8002 for the 9 built-in speakers
+                       # on :${TTS_PORT} for the 9 built-in speakers
   language: English
   speed: 1.0           # global playback rate; modes may override
   # Take audio from the server chunk by chunk while it is still being

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Start ASR on port 8001, in the foreground.
+# Start ASR on the ASR port (the one after the orchestrator's; see
+# scripts/ports.sh), in the foreground.
 #
 # ASR_BACKEND picks the runtime:
 #   vllm      Qwen3-ASR-1.7B through vLLM. CUDA only: vLLM has no Metal
@@ -17,8 +18,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"
-# shellcheck source=../../scripts/local_env.sh
-. "$REPO_ROOT/scripts/local_env.sh"
+# shellcheck source=../../scripts/ports.sh
+. "$REPO_ROOT/scripts/ports.sh"
 
 ASR_BACKEND="${ASR_BACKEND:-vllm}"
 case "$ASR_BACKEND" in
@@ -76,7 +77,7 @@ esac
 export MAX_JOBS="${MAX_JOBS:-4}"
 export HF_HOME="${HF_HOME:-$MODEL_ROOT/.cache/hf}"
 ARGS=(
-    --served-model-name Qwen3-ASR-1.7B --host 127.0.0.1 --port 8001
+    --served-model-name Qwen3-ASR-1.7B --host 127.0.0.1 --port "$ASR_PORT"
     --max-model-len 4096 --gpu-memory-utilization "$ASR_GPU_UTIL"
     --max-num-batched-tokens "$ASR_MAX_BATCHED" --max-num-seqs "$ASR_MAX_SEQS"
 )

@@ -31,7 +31,7 @@ import numpy as np
 import soundfile as sf
 import websockets
 
-TTS_URL = "http://127.0.0.1:8002/v1/audio/speech"
+TTS_URL = f"http://127.0.0.1:{os.environ.get('TTS_PORT', 8892)}/v1/audio/speech"
 CLIENT_SR = 24000  # matches orchestrator CLIENT_SR (Qwen3-ASR native rate)
 CHUNK = 1024       # samples per frame, as sent by the browser worklet
 SILENCE_S = 1.5    # trailing silence the VAD needs to close a turn

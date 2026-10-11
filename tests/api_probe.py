@@ -10,15 +10,22 @@ Usage: ./venv/bin/python tests/api_probe.py [--full]
 
 import argparse
 import json
+import os
 import sys
 
 import httpx
 
+
+def url(env_var: str, default: int, path: str) -> str:
+    """Backend URL for a service, from scripts/ports.sh's variables."""
+    return f"http://127.0.0.1:{os.environ.get(env_var, default)}{path}"
+
+
 TARGETS = {
-    "llm": "http://127.0.0.1:9999/v1/models",
-    "asr": "http://127.0.0.1:8001/v1/models",
-    "tts": "http://127.0.0.1:8002/v1/models",
-    "tts_speakers": "http://127.0.0.1:8002/v1/speakers",
+    "llm": url("LLM_PORT", 8893, "/v1/models"),
+    "asr": url("ASR_PORT", 8891, "/v1/models"),
+    "tts": url("TTS_PORT", 8892, "/v1/models"),
+    "tts_speakers": url("TTS_PORT", 8892, "/v1/speakers"),
 }
 
 

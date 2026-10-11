@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Foreground launcher for llama.cpp serving Qwen3.5-9B (talknest M1 LLM).
 #
-# Run inside tmux so logs stream to the pane. Listens on 127.0.0.1:9999
-# (the talknest LLM port, shared with the vLLM 27B profile -- the two
-# cannot be resident at the same time on unified memory).
+# Run inside tmux so logs stream to the pane. Listens on 127.0.0.1 on the
+# talknest LLM port (see scripts/ports.sh, shared with the vLLM 27B
+# profile -- the two cannot be resident at the same time on unified
+# memory).
 #
 # Tunables (override via env):
-#   TN9B_PORT          listen port (default 9999)
+#   LLM_PORT           listen port (default: TALKNEST_PORT + 3, i.e. 8893
+#                      with the default orchestrator port)
 #   TN9B_HOST          bind address (default 127.0.0.1)
 #   TN9B_API_KEY       Bearer key; a non-loopback host without one is
 #                      rejected
@@ -44,8 +46,8 @@ esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
-# shellcheck source=local_env.sh
-. "$SCRIPT_DIR/local_env.sh"
+# shellcheck source=ports.sh
+. "$SCRIPT_DIR/ports.sh"
 
 MODEL_ROOT="${TALKNEST_MODEL_ROOT:-$(dirname -- "$REPO_ROOT")/model}"
 MODEL_DIR="${TN9B_MODEL_DIR:-$MODEL_ROOT/Qwen3.5-9B-MTP-GGUF}"
@@ -54,7 +56,7 @@ MODEL_PATH="$MODEL_DIR/Qwen3.5-9B-$QUANT.gguf"
 BIN_DIR="${TN9B_BIN_DIR:-}"
 LOG_DIR="${TN9B_LOG_DIR:-$REPO_ROOT/logs}"
 
-PORT="${TN9B_PORT:-9999}"
+PORT="$LLM_PORT"
 HOST="${TN9B_HOST:-127.0.0.1}"
 API_KEY="${TN9B_API_KEY:-}"
 CTX="${TN9B_CTX:-8192}"

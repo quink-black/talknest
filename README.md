@@ -181,7 +181,10 @@ orchestrator 即可生效。
 
 ## 运行与停止
 
-四个服务：ASR（:8001）、TTS（:8002）、LLM（:9999）、界面（:8890）。
+四个服务连成一段端口，起点是界面的端口：界面 :8890、ASR :8891、TTS
+:8892、LLM :8893。三个后端只监听 `127.0.0.1`，改 `local.env` 里的
+`TALKNEST_PORT` 会带着整段移动，`ASR_PORT` / `TTS_PORT` / `LLM_PORT` 则
+单独钉住某一个（见 `scripts/ports.sh`）。
 
 ```bash
 scripts/start.sh                  # 启动全部服务，按依赖顺序等待就绪

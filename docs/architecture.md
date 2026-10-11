@@ -14,11 +14,15 @@ orchestrator。orchestrator 用流式 VAD 切分轮次，维护会话与模式�
 
 | 环节 | 模型 | 运行时 | 端口 |
 |---|---|---|---|
-| orchestrator | — | FastAPI + WebSocket | 8890 |
-| LLM | Qwen3.5-9B MTP GGUF（Q4_K_M） | llama.cpp，可执行文件目录由 `TN9B_BIN_DIR` 指定 | 9999 |
-| ASR | Qwen3-ASR-1.7B | vLLM 的 `qwen-asr-serve`，或 llama.cpp | 8001 |
-| TTS | Qwen3-TTS-12Hz-0.6B-CustomVoice | qwen-tts 包，外面套一层 OpenAI 兼容 sidecar | 8002 |
+| orchestrator | — | FastAPI + WebSocket | `TALKNEST_PORT`（8890） |
+| ASR | Qwen3-ASR-1.7B | vLLM 的 `qwen-asr-serve`，或 llama.cpp | `ASR_PORT`（8891） |
+| TTS | Qwen3-TTS-12Hz-0.6B-CustomVoice | qwen-tts 包，外面套一层 OpenAI 兼容 sidecar | `TTS_PORT`（8892） |
+| LLM | Qwen3.5-9B MTP GGUF（Q4_K_M） | llama.cpp，可执行文件目录由 `TN9B_BIN_DIR` 指定 | `LLM_PORT`（8893） |
 | VAD | Silero VAD（ONNX） | orchestrator 内嵌，CPU 流式 | — |
+
+四个端口连成一段，起点是 orchestrator 自己的端口，三个后端依次占它后面
+一个（`scripts/ports.sh` 是唯一的定义处，每个端口都能在 `local.env` 里
+覆盖）。后端只监听 `127.0.0.1`，对外只需要放开 orchestrator 那一个。
 
 浏览器到服务端的采样率是 24 kHz。Qwen3-ASR 在 16 kHz 输入下会转写失败，
 而 24 kHz 与 Qwen3-Omni 的音频前端一致。轮次切分与打断的机制以及各参数的
