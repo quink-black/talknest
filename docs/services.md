@@ -94,8 +94,11 @@ systemd 里的服务同样生效。某一项缺失时脚本直接报错并提示
 
 tmux 是个例外：window 继承的是 tmux server 的环境，不是调用者的，因此
 `tmux_start.sh` 另外把 `TALKNEST_`、`ASR_`、`TTS_`、`LLM_`、`TN9B_`、
-`QWEN38_`、`TLS_` 开头的变量用 `-e` 逐个传进去（少一个前缀，命令行上给
-的对应覆盖就会被静默丢掉）。
+`QWEN38_`、`TLS_` 开头的变量，以及 `RUN_QWEN38`、`HF_HOME`、
+`PYTORCH_CUDA_ALLOC_CONF` 这几个不带前缀的变量，用 `-e` 逐个传进去。漏掉
+一个，命令行上给的对应覆盖就会被静默丢掉：服务仍按 `local.env` 或默认值
+启动，而 supervisor 这边的健康检查可能已经在等另一个端口。不在这个清单里
+的变量要写进 `local.env`。
 
 `TALKNEST_MODEL_ROOT` 是唯一有默认值的变量：未填写时回退到与仓库同级的
 `model/` 目录，`server/orchestrator/config.py` 的 `model_root()` 用同一

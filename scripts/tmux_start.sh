@@ -26,17 +26,8 @@ SESSION="${TALKNEST_SESSION:-talknest}"
 # dependency order, and an unknown name is rejected, exactly as in
 # scripts/start.sh: -fit sizes the LLM offload to the VRAM that is free
 # when the LLM starts, so the LLM has to come after ASR and TTS.
-if [ "$#" -gt 0 ]; then
-    if ! ordered="$(tn_order_services "$@")"; then
-        exit 2
-    fi
-else
-    ordered="$(tn_order_services)"
-fi
-SERVICES=()
-while IFS= read -r name; do
-    SERVICES+=("$name")
-done <<< "$ordered"
+tn_resolve_services "$@" || exit 2
+SERVICES=("${TN_REQUESTED[@]}")
 
 # A tmux window closes as soon as the service pipeline exits, so the
 # window's existence, not a PID, says whether the service is still coming
@@ -51,11 +42,13 @@ tn_service_alive() {
 
 # A tmux window inherits the tmux server's environment, not the caller's,
 # so overrides given on the command line would be dropped whenever the
-# session already exists.
+# session already exists. The list is the tunable prefixes plus the few
+# standalone names a service script reads; a variable outside it has to
+# come from local.env, which every service sources for itself.
 TMUX_ENV=()
 while IFS='=' read -r name value; do
     TMUX_ENV+=( -e "$name=$value" )
-done < <(env | grep -E '^(TALKNEST_|ASR_|TTS_|LLM_|TN9B_|QWEN38_|TLS_)' || true)
+done < <(env | grep -E '^(TALKNEST_|ASR_|TTS_|LLM_|TN9B_|QWEN38_|TLS_|RUN_QWEN38|HF_HOME|PYTORCH_CUDA_ALLOC_CONF)' || true)
 
 # Services running under systemd would fight for the ports: the stop
 # scripts below fuser-kill them into Restart=on-failure loops. Stop the

@@ -145,9 +145,29 @@ tn_order_services() {
         for req in "$@"; do
             if [ "$req" = "$want" ]; then
                 printf '%s\n' "$want"
+                # One line per service however often it was named: a
+                # duplicate would start the service, free its port and
+                # start it again, and then be counted twice.
+                break
             fi
         done
     done
+}
+
+# The same resolution as tn_order_services, with the result in an array,
+# so the supervisors do not each carry the loop. Fills TN_REQUESTED and
+# returns 2 on an unknown name; the caller owns the exit code. No
+# argument means every service.
+# Usage: tn_resolve_services [name ...]   -> TN_REQUESTED
+tn_resolve_services() {
+    local ordered
+    if ! ordered="$(tn_order_services "$@")"; then
+        return 2
+    fi
+    TN_REQUESTED=()
+    while IFS= read -r name; do
+        TN_REQUESTED+=("$name")
+    done <<< "$ordered"
 }
 
 # Services running under systemd would fight for the ports: killing the

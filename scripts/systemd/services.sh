@@ -15,6 +15,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"
+# shellcheck source=../lib/services.sh
+. "$SCRIPT_DIR/../lib/services.sh"
 
 ACTION="${1:-}"
 case "$ACTION" in
@@ -26,19 +28,15 @@ case "$ACTION" in
 esac
 shift
 
-SERVICES=("$@")
-if [ "${#SERVICES[@]}" -eq 0 ]; then
-    SERVICES=(asr tts llm web)
-fi
+# Names are validated and ordered by the shared table the other
+# supervisors use, and an unknown one is rejected the same way, so a
+# fifth service is added in scripts/lib/services.sh alone. The units
+# themselves still order through After=; only the names come from here.
+tn_resolve_services "$@" || exit 2
+SERVICES=("${TN_REQUESTED[@]}")
 units=()
 for s in "${SERVICES[@]}"; do
-    case "$s" in
-        asr|tts|llm|web) units+=("talknest-$s.service") ;;
-        *)
-            echo "$0: unknown service '$s' (asr|tts|llm|web)" >&2
-            exit 2
-            ;;
-    esac
+    units+=("talknest-$s.service")
 done
 
 # talknest-llm has Requires= on asr and tts, so stopping either stops it

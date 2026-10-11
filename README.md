@@ -8,8 +8,8 @@ Talknest 是一个本地部署的英语口语对话练习应用，面向儿童�
 
 | 平台 | 硬件 | ASR | llama.cpp 构建选项 | TTS 设备 | 常驻方式 |
 |---|---|---|---|---|---|
-| Linux | NVIDIA GPU，显存 12 GB 以上 | vLLM（默认） | `-DGGML_CUDA=ON` | CUDA | tmux 或 systemd |
-| macOS | Apple Silicon | llama.cpp（`ASR_BACKEND=llamacpp`） | `-DGGML_METAL=ON` | MPS | tmux |
+| Linux | NVIDIA GPU，显存 12 GB 以上 | vLLM（默认） | `-DGGML_CUDA=ON` | CUDA | `start.sh -d`、tmux 或 systemd |
+| macOS | Apple Silicon | llama.cpp（`ASR_BACKEND=llamacpp`） | `-DGGML_METAL=ON` | MPS | `start.sh -d` 或 tmux |
 
 表中只列出已经测试过的组合。ASR、TTS 与 LLM 各自是独立的 HTTP 服务，因此
 欢迎把项目移植到其他平台，例如 AMD GPU 或纯 CPU 环境。

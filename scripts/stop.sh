@@ -14,19 +14,21 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/services.sh
 . "$SCRIPT_DIR/lib/services.sh"
 
-# Reject an unknown name rather than reporting it as stopped: an empty
-# stop script looked like a no-op that succeeded.
-if [ "$#" -gt 0 ]; then
-    if ! ordered="$(tn_order_services "$@")"; then
-        exit 2
-    fi
-    SERVICES=()
-    while IFS= read -r name; do
-        SERVICES+=("$name")
-    done <<< "$ordered"
-else
-    SERVICES=("${TN_SERVICES[@]}")
-fi
+# Resolve the names through the shared table, which rejects an unknown
+# one. It used to be reported as stopped: tn_stop_script printed nothing,
+# so the loop ran an empty command word, `|| true` swallowed the
+# "command not found", and the run still ended with "<name> stopped" and
+# exit 0.
+tn_resolve_services "$@" || exit 2
+SERVICES=("${TN_REQUESTED[@]}")
+
+# Reverse of the start order: the orchestrator goes first, so no new
+# session is handed to a backend whose port is about to be freed.
+ORDER=()
+for (( i = ${#SERVICES[@]} - 1; i >= 0; i-- )); do
+    ORDER+=("${SERVICES[i]}")
+done
+SERVICES=("${ORDER[@]}")
 
 tn_stop_systemd_units "${SERVICES[@]}"
 

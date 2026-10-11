@@ -51,18 +51,14 @@ done
 
 # Whatever order the names were typed in, the services start in the
 # dependency order: -fit sizes the LLM offload to the VRAM that is free
-# when the LLM starts, so the LLM has to come after ASR and TTS.
+# when the LLM starts, so the LLM has to come after ASR and TTS. An
+# unknown name is rejected before anything is started.
 if [ "${#REQUESTED[@]}" -gt 0 ]; then
-    if ! ordered="$(tn_order_services "${REQUESTED[@]}")"; then
-        exit 2
-    fi
+    tn_resolve_services "${REQUESTED[@]}" || exit 2
 else
-    ordered="$(tn_order_services)"
+    tn_resolve_services || exit 2
 fi
-SERVICES=()
-while IFS= read -r name; do
-    SERVICES+=("$name")
-done <<< "$ordered"
+SERVICES=("${TN_REQUESTED[@]}")
 
 STARTED=()
 PIDS=()
