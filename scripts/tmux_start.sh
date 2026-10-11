@@ -48,7 +48,9 @@ tn_service_alive() {
 TMUX_ENV=()
 while IFS='=' read -r name value; do
     TMUX_ENV+=( -e "$name=$value" )
-done < <(env | grep -E '^(TALKNEST_|ASR_|TTS_|LLM_|TN9B_|QWEN38_|TLS_|RUN_QWEN38|HF_HOME|PYTORCH_CUDA_ALLOC_CONF)' || true)
+# The three names without a prefix are anchored to `=`, so a variable
+# that merely starts with one of them is not forwarded by accident.
+done < <(env | grep -E '^(TALKNEST_|ASR_|TTS_|LLM_|TN9B_|QWEN38_|TLS_|RUN_QWEN38=|HF_HOME=|PYTORCH_CUDA_ALLOC_CONF=)' || true)
 
 # Services running under systemd would fight for the ports: the stop
 # scripts below fuser-kill them into Restart=on-failure loops. Stop the

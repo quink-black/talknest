@@ -160,7 +160,7 @@ tn_order_services() {
 # argument means every service.
 # Usage: tn_resolve_services [name ...]   -> TN_REQUESTED
 tn_resolve_services() {
-    local ordered
+    local ordered name
     if ! ordered="$(tn_order_services "$@")"; then
         return 2
     fi

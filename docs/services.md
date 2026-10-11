@@ -45,6 +45,11 @@ llama.cpp 的 `-fit on` 会按启动那一刻剩余的显存选择卸载层数�
 start / stop / restart / status。日志走 journald。macOS 没有 systemd，
 常驻这一步用 `scripts/start.sh -d`。
 
+`services.sh` 只用到服务名表，但它与两个启动脚本共用
+`scripts/lib/services.sh`，因此也会读 `local.env` 与 `scripts/ports.sh`：
+这两处写错时连 `status` 都会退出，而不仅仅是启动失败。所有启动脚本同样
+依赖它们，所以这只把 systemd 这条路径拉到与其它路径一致的水平。
+
 三种方式可以互换：两种启动脚本都会先停掉正在运行的 systemd 单元，
 `scripts/stop.sh` 也覆盖三种方式收尾。不要同时运行，端口只有一个。
 
