@@ -74,6 +74,12 @@ CUDA 与 MPS 都使用 bfloat16：在 MPS 上，float16 会使采样器溢出并
 远大于 12 GB 的显存。指向局域网的 profile 需要 `QWEN38_API_KEY`（写在
 `config.yaml` 里，由环境变量展开）， orchestrator 进程的环境里必须有它。
 
+下拉里只出现真的在提供自己那个模型的 profile：`GET /llm` 会并发探测各后端
+的 `/v1/models`，配置里的名字对不上或连不上就不列出，`POST /llm` 对这样的
+profile 返回 409。当前选中的 profile 即使后端停了也仍然列出，页面上始终能看
+到下一个回合会走哪个后端。9B 与 27B 共用同一端口，所以本机模型任何时候最多
+只出现一个。
+
 所有后端都提供 OpenAI 的 chat-completions 接口，所以编排器里没有按后端
 分支的代码；各后端的差异放在 profile 自己的字段里：
 

@@ -20,6 +20,7 @@ import re
 import time
 from dataclasses import replace
 
+import httpx
 import numpy as np
 from fastapi import (FastAPI, HTTPException, Request, WebSocket,
                      WebSocketDisconnect)
@@ -991,18 +992,64 @@ async def get_modes():
     }
 
 
-def llm_state() -> dict:
-    """Active profile and the list to choose from, for the client dropdown."""
-    profiles = [{"name": name, "label": p.get("label", name),
-                 "model": p.get("model", "")}
-                for name, p in LLM_PROFILES.items()]
+# A profile is offered only while its server answers and lists the model
+# the profile names. The 9B and the 27B share one port on this host, so at
+# most one of them is ever true, and a host that is off is not a choice.
+MODEL_PROBE_TIMEOUT = 2.0
+
+
+def served_ids(payload: dict) -> set[str]:
+    """Model ids from either shape /v1/models comes in.
+
+    vLLM answers the OpenAI list (`data[].id`), llama.cpp the Ollama one
+    (`models[].name`).
+    """
+    if isinstance(payload.get("data"), list):
+        return {str(m.get("id", "")) for m in payload["data"]}
+    return {str(m.get("name") or m.get("model") or "")
+            for m in payload.get("models") or []}
+
+
+async def profile_available(name: str) -> bool:
+    """Whether this profile's server is up and serving its model."""
+    profile = LLM_PROFILES[name]
+    headers = {}
+    if key := profile.get("api_key"):
+        headers["Authorization"] = f"Bearer {key}"
+    url = profile["base_url"].rstrip("/") + "/models"
+    try:
+        async with httpx.AsyncClient(timeout=MODEL_PROBE_TIMEOUT,
+                                     trust_env=False) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            return False
+        return profile["model"] in served_ids(resp.json())
+    except Exception:   # a host that is gone, or answers with nonsense
+        return False
+
+
+async def llm_state() -> dict:
+    """Active profile and the ones a switch could go to, for the dropdown.
+
+    The active one is listed even when its backend is down: the page has
+    to show what a turn would use, not an empty picker.
+    """
+    names = list(LLM_PROFILES)
+    up = await asyncio.gather(*(profile_available(n) for n in names))
+    profiles = []
+    for name, is_up in zip(names, up):
+        if not (is_up or name == ACTIVE_LLM):
+            continue
+        p = LLM_PROFILES[name]
+        profiles.append({"name": name, "label": p.get("label", name),
+                         "model": p.get("model", "")})
     return {"active": ACTIVE_LLM, "profiles": profiles}
 
 
 @app.get("/llm")
 async def get_llm():
-    """Which LLM a turn goes to, and which ones are configured."""
-    return llm_state()
+    """Which LLM a turn goes to, and which ones are actually serving."""
+    return await llm_state()
 
 
 @app.post("/llm")
@@ -1018,10 +1065,15 @@ async def set_llm(body: dict):
     if name not in LLM_PROFILES:
         raise HTTPException(status_code=404,
                             detail=f"unknown llm profile: {name}")
+    if name != ACTIVE_LLM and not await profile_available(name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"llm profile {name} is not serving "
+                   f"{LLM_PROFILES[name].get('model')}")
     if name != ACTIVE_LLM:
         ACTIVE_LLM = name
         log.info("llm profile -> %s (%s)", name, LLM_PROFILES[name].get("model"))
-    return llm_state()
+    return await llm_state()
 
 
 @app.get("/learners")

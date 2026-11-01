@@ -13,11 +13,11 @@ import numpy as np
 import pytest
 from fastapi import HTTPException
 
+from orchestrator import main
 from orchestrator.asr import in_scope, parse_transcript
 from orchestrator.config import load
 from orchestrator.main import (SENTENCE_MIN_CHARS, THINK_RE, barge_in_due,
-                               clean_for_tts, extract_sentences, llm_client,
-                               llm_state, set_llm)
+                               clean_for_tts, extract_sentences)
 from orchestrator.tts import time_stretch
 from orchestrator.vad import FRAME_MS, Resampler, StreamVAD
 
@@ -301,24 +301,53 @@ class TestLlmProfiles:
         # extra_body is what turns a reasoning model's thinking off; a
         # client that dropped it would stream nothing but reasoning.
         for name, p in config["llm"]["profiles"].items():
-            client = llm_client(name)
+            client = main.llm_client(name)
             assert client.model == p["model"]
             assert client.base_url == p["base_url"].rstrip("/")
             assert client.extra_body == (p.get("extra_body") or {})
 
-    def test_switch_moves_the_active_profile(self, config):
-        first = llm_state()["active"]
+    def test_a_serving_backend_is_offered_and_can_be_picked(self, config,
+                                                           monkeypatch):
+        async def up(name):
+            return True
+
+        monkeypatch.setattr(main, "profile_available", up)
+        first = asyncio.run(main.llm_state())["active"]
         other = next(n for n in config["llm"]["profiles"] if n != first)
         try:
-            assert asyncio.run(set_llm({"profile": other}))["active"] == other
-            assert llm_state()["active"] == other
+            assert asyncio.run(main.set_llm({"profile": other}))["active"] == other
+            assert asyncio.run(main.llm_state())["active"] == other
         finally:
-            asyncio.run(set_llm({"profile": first}))
-        assert llm_state()["active"] == first
+            asyncio.run(main.set_llm({"profile": first}))
+        assert asyncio.run(main.llm_state())["active"] == first
+
+    def test_a_backend_that_is_not_serving_is_neither_offered_nor_picked(
+            self, config, monkeypatch):
+        # The 9B and the 27B share a port, so only one of them is real at a
+        # time: a menu entry that would silently answer from the other
+        # model is worse than no entry.
+        active = main.ACTIVE_LLM
+
+        async def up(name):
+            return name == active
+
+        monkeypatch.setattr(main, "profile_available", up)
+        offered = [p["name"] for p in asyncio.run(main.llm_state())["profiles"]]
+        assert offered == [active]
+        other = next(n for n in config["llm"]["profiles"] if n != active)
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(main.set_llm({"profile": other}))
+        assert err.value.status_code == 409
 
     def test_unknown_profile_is_refused(self):
         with pytest.raises(HTTPException):
-            asyncio.run(set_llm({"profile": "no-such-backend"}))
+            asyncio.run(main.set_llm({"profile": "no-such-backend"}))
+
+    def test_served_ids_reads_both_model_list_shapes(self):
+        openai = {"object": "list", "data": [{"id": "a"}, {"id": "b"}]}
+        ollama = {"models": [{"name": "a", "model": "a"}]}
+        assert main.served_ids(openai) == {"a", "b"}
+        assert main.served_ids(ollama) == {"a"}
 
 
 class TestBargeInDue:
