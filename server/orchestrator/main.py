@@ -1001,8 +1001,8 @@ MODEL_PROBE_TIMEOUT = 2.0
 def served_ids(payload: dict) -> set[str]:
     """Model ids from either shape /v1/models comes in.
 
-    vLLM answers the OpenAI list (`data[].id`), llama.cpp the Ollama one
-    (`models[].name`).
+    vLLM answers the OpenAI list (`data[].id`); llama.cpp answers that and
+    `models[].name`, while an Ollama server has only the latter.
     """
     if isinstance(payload.get("data"), list):
         return {str(m.get("id", "")) for m in payload["data"]}
@@ -1010,9 +1010,33 @@ def served_ids(payload: dict) -> set[str]:
             for m in payload.get("models") or []}
 
 
-async def profile_available(name: str) -> bool:
-    """Whether this profile's server is up and serving its model."""
+def unexpanded(value) -> bool:
+    """Whether a config value still holds a ${VAR} the environment lacked.
+
+    config.load() leaves a variable that is not exported exactly as
+    written. For a port that is harmless, because the request fails on the
+    URL; for an api_key it is not, because the result is a syntactically
+    valid credential with the wrong value, which the server rejects while
+    the profile looks merely down.
+    """
+    return isinstance(value, str) and "${" in value
+
+
+async def profile_problem(name: str) -> str | None:
+    """Why this profile cannot serve a turn, or None when it can.
+
+    The reason is kept instead of folded into a bool: a profile that drops
+    out of the picker with no explanation sends the operator to the
+    backend when the fault is in this checkout's environment.
+    """
     profile = LLM_PROFILES[name]
+    for field in ("base_url", "model"):
+        if not profile.get(field):
+            return f"no {field} in its config"
+        if unexpanded(profile[field]):
+            return f"{field} is an unexpanded placeholder"
+    if unexpanded(profile.get("api_key")):
+        return "api_key is an unexpanded placeholder"
     headers = {}
     if key := profile.get("api_key"):
         headers["Authorization"] = f"Bearer {key}"
@@ -1021,11 +1045,17 @@ async def profile_available(name: str) -> bool:
         async with httpx.AsyncClient(timeout=MODEL_PROBE_TIMEOUT,
                                      trust_env=False) as client:
             resp = await client.get(url, headers=headers)
-        if resp.status_code != 200:
-            return False
-        return profile["model"] in served_ids(resp.json())
-    except Exception:   # a host that is gone, or answers with nonsense
-        return False
+    except Exception as exc:   # a host that is gone, or a timeout
+        return f"{url} did not answer ({exc.__class__.__name__})"
+    if resp.status_code != 200:
+        return f"{url} answered HTTP {resp.status_code}"
+    try:
+        ids = served_ids(resp.json())
+    except ValueError:
+        return f"{url} did not answer a model list"
+    if profile["model"] not in ids:
+        return f"{url} does not list {profile['model']}"
+    return None
 
 
 async def llm_state() -> dict:
@@ -1035,11 +1065,14 @@ async def llm_state() -> dict:
     to show what a turn would use, not an empty picker.
     """
     names = list(LLM_PROFILES)
-    up = await asyncio.gather(*(profile_available(n) for n in names))
+    problems = await asyncio.gather(*(profile_problem(n) for n in names))
     profiles = []
-    for name, is_up in zip(names, up):
-        if not (is_up or name == ACTIVE_LLM):
+    for name, problem in zip(names, problems):
+        if problem is not None and name != ACTIVE_LLM:
+            log.info("llm profile %s not offered: %s", name, problem)
             continue
+        if problem is not None:
+            log.info("active llm profile %s cannot serve: %s", name, problem)
         p = LLM_PROFILES[name]
         profiles.append({"name": name, "label": p.get("label", name),
                          "model": p.get("model", "")})
@@ -1065,12 +1098,12 @@ async def set_llm(body: dict):
     if name not in LLM_PROFILES:
         raise HTTPException(status_code=404,
                             detail=f"unknown llm profile: {name}")
-    if name != ACTIVE_LLM and not await profile_available(name):
-        raise HTTPException(
-            status_code=409,
-            detail=f"llm profile {name} is not serving "
-                   f"{LLM_PROFILES[name].get('model')}")
     if name != ACTIVE_LLM:
+        problem = await profile_problem(name)
+        if problem is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"llm profile {name} cannot serve: {problem}")
         ACTIVE_LLM = name
         log.info("llm profile -> %s (%s)", name, LLM_PROFILES[name].get("model"))
     return await llm_state()

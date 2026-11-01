@@ -1250,9 +1250,13 @@ $("llm").addEventListener("change", async (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: e.target.value }),
     });
-    if (!r.ok) throw new Error(r.status);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.detail || r.status);
+    }
   } catch (err) {
-    /* The switch did not take: show the server's choice again. */
+    /* The switch did not take: say why, then show the server's choice. */
+    setStatus("error: " + err.message, false);
     loadLlm();
   }
 });

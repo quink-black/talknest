@@ -309,9 +309,9 @@ class TestLlmProfiles:
     def test_a_serving_backend_is_offered_and_can_be_picked(self, config,
                                                            monkeypatch):
         async def up(name):
-            return True
+            return None
 
-        monkeypatch.setattr(main, "profile_available", up)
+        monkeypatch.setattr(main, "profile_problem", up)
         first = asyncio.run(main.llm_state())["active"]
         other = next(n for n in config["llm"]["profiles"] if n != first)
         try:
@@ -329,15 +329,29 @@ class TestLlmProfiles:
         active = main.ACTIVE_LLM
 
         async def up(name):
-            return name == active
+            return None if name == active else "not serving"
 
-        monkeypatch.setattr(main, "profile_available", up)
+        monkeypatch.setattr(main, "profile_problem", up)
         offered = [p["name"] for p in asyncio.run(main.llm_state())["profiles"]]
         assert offered == [active]
         other = next(n for n in config["llm"]["profiles"] if n != active)
         with pytest.raises(HTTPException) as err:
             asyncio.run(main.set_llm({"profile": other}))
         assert err.value.status_code == 409
+        assert "not serving" in err.value.detail
+
+    def test_an_unexpanded_placeholder_is_not_a_credential(self, monkeypatch):
+        # config.load() leaves ${VAR} as written when the variable is not
+        # exported, so an unset key becomes a valid-looking bearer token the
+        # server rejects; probing would report a down backend instead.
+        name = "half-configured"
+        monkeypatch.setitem(main.LLM_PROFILES, name, {
+            "base_url": "http://127.0.0.1:1/v1",
+            "model": "m",
+            "api_key": "${NOT_EXPORTED}",
+        })
+        problem = asyncio.run(main.profile_problem(name))
+        assert problem == "api_key is an unexpanded placeholder"
 
     def test_unknown_profile_is_refused(self):
         with pytest.raises(HTTPException):
