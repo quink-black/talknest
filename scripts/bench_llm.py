@@ -169,21 +169,41 @@ def measure(client, ep, messages, rounds, max_tokens):
     """Median of `rounds` runs. Returns TTFT, total, tokens and the decode
     rate over the stretch after the first token -- dividing tokens by the
     total would charge the wait for the first token to generation, which
-    makes a terse model look slow."""
+    makes a terse model look slow.
+
+    A run that emits no content has no TTFT and no decode rate to take a
+    median of, so those runs are counted in `no_content` and left out of
+    the medians. This is the backend the orchestrator reports as an empty
+    reply, so the script has to name it instead of failing on the subtraction.
+    """
     runs = [stream_once(client, ep, messages, max_tokens) for _ in range(rounds)]
-    ttfts = [r[0] for r in runs]
-    totals = [r[1] for r in runs]
-    counts = [r[2] for r in runs]
-    rates = [n / max(total - ttft, 1e-9)
-             for ttft, total, n, _, _ in runs]
-    return {
-        "ttft_med_s": statistics.median(ttfts),
-        "total_med_s": statistics.median(totals),
-        "tokens_med": statistics.median(counts),
-        "decode_tok_s": statistics.median(rates),
+    seen = [r for r in runs if r[0] is not None]
+    med = statistics.median
+    stats = {
+        "no_content": len(runs) - len(seen),
         "reasoning": sum(r[4] for r in runs),
         "last_text": runs[-1][3],
     }
+    if not seen:
+        stats.update({"ttft_med_s": None, "total_med_s": med(r[1] for r in runs),
+                      "tokens_med": 0, "decode_tok_s": None})
+        return stats
+    stats.update({
+        "ttft_med_s": med(r[0] for r in seen),
+        "total_med_s": med(r[1] for r in seen),
+        "tokens_med": med(r[2] for r in seen),
+        "decode_tok_s": med(n / max(total - ttft, 1e-9)
+                            for ttft, total, n, _, _ in seen),
+    })
+    return stats
+
+
+def _ms(value):
+    return "n/a" if value is None else f"{value * 1000:.0f} ms"
+
+
+def _rate(value):
+    return "n/a" if value is None else f"{value:.1f}"
 
 
 def dialog_e2e(client, ep):
@@ -235,8 +255,8 @@ def report(results, rounds):
         ep, a = r["endpoint"], r["r128"]
         lines.append(
             f"| {ep['label']} | `{ep['base_url']}` {ep['model']} "
-            f"| {a['ttft_med_s']*1000:.0f} ms | {a['total_med_s']:.2f} s "
-            f"| {a['tokens_med']:.0f} | {a['decode_tok_s']:.1f} |"
+            f"| {_ms(a['ttft_med_s'])} | {a['total_med_s']:.2f} s "
+            f"| {a['tokens_med']:.0f} | {_rate(a['decode_tok_s'])} |"
         )
     lines += [
         "",
@@ -249,7 +269,7 @@ def report(results, rounds):
         ep, a = r["endpoint"], r["rlong"]
         lines.append(
             f"| {ep['label']} | {a['tokens_med']:.0f} "
-            f"| {a['total_med_s']:.2f} s | {a['decode_tok_s']:.1f} |"
+            f"| {a['total_med_s']:.2f} s | {_rate(a['decode_tok_s'])} |"
         )
     if results[0]["rvoice"] is not None:
         lines += [
@@ -262,9 +282,9 @@ def report(results, rounds):
         for r in results:
             a = r["rvoice"]
             lines.append(
-                f"| {r['endpoint']['label']} | {a['ttft_med_s']*1000:.0f} ms "
+                f"| {r['endpoint']['label']} | {_ms(a['ttft_med_s'])} "
                 f"| {a['total_med_s']:.2f} s | {a['tokens_med']:.0f} "
-                f"| {a['decode_tok_s']:.1f} |"
+                f"| {_rate(a['decode_tok_s'])} |"
             )
     lines += [
         "",
@@ -282,6 +302,13 @@ def report(results, rounds):
         thought = a["reasoning"] or b["reasoning"] or c["reasoning"]
         leak = any("<think>" in t or "</think>" in t
                    for t in (a["last_text"], b["last_text"]))
+        empty = a["no_content"] or b["no_content"] or c["no_content"]
+        if empty:
+            verdict = f"FAIL — {empty} run(s) returned no content"
+        elif thought or leak:
+            verdict = "FAIL — the model reasoned before answering"
+        else:
+            verdict = "pass (no reasoning tokens)"
         lines += [
             f"## {ep['label']}",
             "",
@@ -289,9 +316,7 @@ def report(results, rounds):
             f"- Extra request fields: {ep['extra'] or 'none'}",
             f"- 512-token budget: {c['total_med_s']:.2f} s, "
             f"{c['tokens_med']:.0f} tokens",
-            "- Non-thinking check: " + (
-                "FAIL — the model reasoned before answering"
-                if (thought or leak) else "pass (no reasoning tokens)"),
+            f"- Non-thinking check: {verdict}",
             f"- Sample reply: {a['last_text'].strip()[:160]!r}",
             "",
         ]
