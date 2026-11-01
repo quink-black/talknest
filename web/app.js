@@ -1317,7 +1317,10 @@ scheduleYawWander();
 scheduleYawSpin();
 
 loadModes().then(loadLearners).then(loadUnits).then(loadWords)
-  .then(loadSpeakers).then(loadLlm).finally(connect);
+  .then(loadSpeakers).finally(connect);
+/* GET /llm probes every configured backend, so the dropdown must not hold
+   up the microphone: a backend that is off would delay session start. */
+loadLlm();
 checkSecureContext();
 syncDeviceUi();
 scheduleRecheck(WATCHDOG_MS);  // start the periodic look
