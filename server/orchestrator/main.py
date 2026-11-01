@@ -6,8 +6,9 @@ TTS -> PCM frames back to the client. Nobody signals the start or end of a
 sentence: speaking over the assistant cuts it off (barge-in) and starts the
 next turn.
 
-The LLM backend (llama.cpp or vLLM) is whatever llm.active points at in
-config.yaml — this file has no backend branches.
+The LLM backend is whichever llm profile is active: llama.cpp or vLLM on
+this host, or an OpenAI-compatible server somewhere on the LAN. POST /llm
+moves it at runtime; this file has no backend branches.
 """
 
 import asyncio
@@ -20,7 +21,8 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
@@ -39,12 +41,35 @@ cfg = load()
 app = FastAPI(title="talknest-orchestrator")
 log = logging.getLogger(__name__)
 
-llm = LLMClient(
-    cfg["llm"]["profiles"][cfg["llm"]["active"]]["base_url"],
-    cfg["llm"]["profiles"][cfg["llm"]["active"]]["model"],
-    cfg["llm"]["profiles"][cfg["llm"]["active"]].get("api_key", ""),
-    cfg["llm"].get("sampling", {}),
-)
+# Every profile in llm.profiles is a candidate backend; llm.active names the
+# one a turn goes to, and POST /llm moves it without a restart. Clients are
+# built on first use, so a profile whose host is down costs nothing until
+# something asks for it.
+LLM_PROFILES: dict = cfg["llm"]["profiles"]
+LLM_SAMPLING: dict = cfg["llm"].get("sampling", {})
+ACTIVE_LLM: str = cfg["llm"]["active"]
+_llm_clients: dict[str, LLMClient] = {}
+
+
+def llm_client(name: str | None = None) -> LLMClient:
+    """The client of the active profile, or of the named one."""
+    name = name or ACTIVE_LLM
+    client = _llm_clients.get(name)
+    if client is None:
+        client = LLMClient.from_profile(LLM_PROFILES[name], LLM_SAMPLING)
+        _llm_clients[name] = client
+    return client
+
+
+def history_messages() -> int:
+    """How much history the active profile is asked to carry.
+
+    Read per turn rather than frozen at import, so switching profiles
+    switches the window with it.
+    """
+    return int(LLM_PROFILES[ACTIVE_LLM].get("history_messages", 20))
+
+
 asr = ASRClient(cfg["asr"]["base_url"], cfg["asr"]["model"],
                 cfg["asr"].get("languages", DEFAULT_LANGUAGES))
 tts = TTSClient(cfg["tts"]["base_url"], cfg["tts"]["model"], cfg["tts"]["voice"],
@@ -103,8 +128,6 @@ NUDGE_LINES = (
 # turn, so more than this is a misparse, not a lesson.
 TOPIC_WORDS_PER_TURN = 2
 DEFAULT_LEARNER = str(TEACHING_CFG.get("default_learner", "default"))
-HISTORY_MESSAGES = int(
-    cfg["llm"]["profiles"][cfg["llm"]["active"]].get("history_messages", 20))
 
 # Appended to a mode's system prompt when it sets english_ratio. A model
 # cannot count its own output, so the number is restated as a rule it can
@@ -533,7 +556,7 @@ async def compact_history(sess: Session):
     Runs off the critical path: the summary is only used from the next turn
     on, so the child never waits for it.
     """
-    overflow = len(sess.history) - HISTORY_MESSAGES
+    overflow = len(sess.history) - history_messages()
     if overflow < COMPACT_MESSAGES:
         return
     oldest = sess.history[: overflow]
@@ -541,7 +564,7 @@ async def compact_history(sess: Session):
     prompt = COMPACT_PROMPT.format(previous=sess.summary or "（无）",
                                    transcript=transcript)
     try:
-        reply = "".join([d async for d in llm.stream_chat(
+        reply = "".join([d async for d in llm_client().stream_chat(
             [{"role": "user", "content": prompt}], max_tokens=160)]).strip()
     except Exception as e:
         log.warning("compaction failed: %s", e)
@@ -612,7 +635,7 @@ def build_messages(sess: Session, text: str,
         # an empty one keeps this turn from crediting any word as taught.
         sess.plan = state_block.Plan()
         return ([{"role": "system", "content": sess.system_prompt()}]
-                + sess.history[-HISTORY_MESSAGES:]
+                + sess.history[-history_messages():]
                 + [{"role": "user", "content": PARENT_PREFIX + text}])
     plan = state_block.Plan()
     if sess.store is not None and sess.units and not sess.free_active():
@@ -627,7 +650,7 @@ def build_messages(sess: Session, text: str,
     sess.plan = plan   # the turn's bookkeeping credits what was asked for
     block = state_block.render(plan, BLOCK_CAPS)
     messages = [{"role": "system", "content": sess.system_prompt()}]
-    messages += sess.history[-HISTORY_MESSAGES:]
+    messages += sess.history[-history_messages():]
     messages.append(
         {"role": "user", "content": f"{block}\n\n{text}" if block else text})
     return messages
@@ -680,7 +703,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         reply_parts, sent_start = [], 0
         stopped_at = None   # reply text up to the request to repeat
 
-        async for delta in llm.stream_chat(messages, cancel=cancel):
+        async for delta in llm_client().stream_chat(messages, cancel=cancel):
             if cancel.is_set():
                 break
             reply_parts.append(delta)
@@ -708,6 +731,16 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
 
         reply = (stopped_at if stopped_at is not None
                  else THINK_RE.sub("", "".join(reply_parts))).strip()
+        if not reply:
+            # A backend that thinks before it answers sends its reasoning
+            # outside the content field, and the turn would otherwise end
+            # silently with nothing said and nothing reported.
+            queue.put_nowait(None)
+            await worker
+            await send_json(ws, {"type": "error",
+                                 "message": "empty reply from the LLM"})
+            await send_json(ws, {"type": "reply_done", "marks": marks})
+            return
         rest = reply[sent_start:].strip() if sent_start < len(reply) else ""
         if rest:
             spoken.append(rest)
@@ -737,7 +770,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         if user_text:
             record_turn(sess, user_text, spoken, cancel.is_set(), who)
             if (TEACHING and not sess.compacting
-                    and len(sess.history) - HISTORY_MESSAGES >= COMPACT_MESSAGES):
+                    and len(sess.history) - history_messages() >= COMPACT_MESSAGES):
                 sess.compacting = True
                 task = asyncio.create_task(compact_history(sess))
                 task.add_done_callback(
@@ -956,6 +989,39 @@ async def get_modes():
             for name, m in cfg["modes"].items()
         ],
     }
+
+
+def llm_state() -> dict:
+    """Active profile and the list to choose from, for the client dropdown."""
+    profiles = [{"name": name, "label": p.get("label", name),
+                 "model": p.get("model", "")}
+                for name, p in LLM_PROFILES.items()]
+    return {"active": ACTIVE_LLM, "profiles": profiles}
+
+
+@app.get("/llm")
+async def get_llm():
+    """Which LLM a turn goes to, and which ones are configured."""
+    return llm_state()
+
+
+@app.post("/llm")
+async def set_llm(body: dict):
+    """Switch the backend the next turn goes to.
+
+    A turn already in flight keeps the model it started with; the
+    conversation is not reset, because the switch is a deployment choice,
+    not a change of what the tutor is doing.
+    """
+    global ACTIVE_LLM
+    name = str(body.get("profile", "")).strip()
+    if name not in LLM_PROFILES:
+        raise HTTPException(status_code=404,
+                            detail=f"unknown llm profile: {name}")
+    if name != ACTIVE_LLM:
+        ACTIVE_LLM = name
+        log.info("llm profile -> %s (%s)", name, LLM_PROFILES[name].get("model"))
+    return llm_state()
 
 
 @app.get("/learners")

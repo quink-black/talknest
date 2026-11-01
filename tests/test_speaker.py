@@ -429,7 +429,7 @@ def household(tmp_path, monkeypatch):
     sess.open_learner("tester")
     enroll_all(sess.speakers)
     llm = _LLM()
-    monkeypatch.setattr(main, "llm", llm)
+    monkeypatch.setattr(main, "llm_client", lambda name=None: llm)
     monkeypatch.setattr(main, "tts", _TTS())
 
     def say(heard, voice):

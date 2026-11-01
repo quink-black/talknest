@@ -89,7 +89,7 @@ def plain_messages(sess, text: str) -> list[dict]:
     """What the pipeline sent before any of this existed, for comparison."""
     prompt = orch.cfg["modes"][sess.mode]["system_prompt"]
     return ([{"role": "system", "content": prompt}]
-            + sess.history[-orch.HISTORY_MESSAGES:]
+            + sess.history[-orch.history_messages():]
             + [{"role": "user", "content": text}])
 
 
@@ -103,7 +103,7 @@ async def run(sess, utterances, with_plan: bool) -> dict:
         targets = list(plan.new) + list(plan.review)
         start = asyncio.get_event_loop().time()
         reply, ttft = "", None
-        async for delta in orch.llm.stream_chat(messages):
+        async for delta in orch.llm_client().stream_chat(messages):
             if ttft is None:
                 ttft = (asyncio.get_event_loop().time() - start) * 1000
             reply += delta
@@ -144,7 +144,7 @@ async def run_mishearings(sess) -> dict:
                      f"{gloss}的英文是 {word}。跟我读一遍：{word}！"},
                     {"role": "user", "content": f"{block}\n\n{heard}"}]
         reply = ""
-        async for delta in orch.llm.stream_chat(messages):
+        async for delta in orch.llm_client().stream_chat(messages):
             reply += delta
         low = reply.lower()
         if re.search(rf"\b{re.escape(word.lower())}\b", low):
@@ -173,7 +173,7 @@ async def run_topics(sess, plan_turn: bool) -> dict:
         messages = orch.build_messages(sess, text)
         targets = list(sess.plan.new) + list(sess.plan.review)
         reply = ""
-        async for delta in orch.llm.stream_chat(messages):
+        async for delta in orch.llm_client().stream_chat(messages):
             reply += delta
         reply = orch.THINK_RE.sub("", reply).strip()
         if not REFUSALS.search(reply):
@@ -219,7 +219,7 @@ async def run_readbacks(sess) -> dict:
         sess.awaiting, sess.read_tries = word, 0
         sess.turn_count = 1
         reply = ""
-        async for delta in orch.llm.stream_chat(orch.build_messages(sess, said)):
+        async for delta in orch.llm_client().stream_chat(orch.build_messages(sess, said)):
             reply += delta
         reply = orch.THINK_RE.sub("", reply).strip()
         cut = orch.match.cut_after_invitation(reply)
@@ -246,7 +246,7 @@ def report(cfg: dict, rounds: int, planned: dict, baseline: dict,
         f"- Host: {platform.node()} ({platform.machine()})",
         f"- Endpoint: {profile['base_url']}  model: {profile['model']}",
         f"- Rounds: {rounds}",
-        f"- History window: {orch.HISTORY_MESSAGES} messages",
+        f"- History window: {orch.history_messages()} messages",
         f"- Block caps: new {orch.BLOCK_CAPS.new_items}, "
         f"review {orch.BLOCK_CAPS.review_items}, "
         f"known {orch.BLOCK_CAPS.known_items}",

@@ -1,7 +1,8 @@
 # Talknest orchestrator config.
-# LLM backend switch: change llm.active to the profile name, restart the
-# corresponding service (see server/services/). Both profiles expose the
-# OpenAI chat-completions API, so orchestrator code is backend-agnostic.
+# LLM backend switch: change llm.active to the profile name, or switch it
+# at runtime through POST /llm (the web UI has a dropdown for it). Every
+# profile exposes the OpenAI chat-completions API, so orchestrator code is
+# backend-agnostic; a profile may point at another host on the LAN.
 
 # Every ${...} below expands from the environment when this file is read,
 # so the backend URLs follow scripts/ports.sh: set ASR_PORT / TTS_PORT /
@@ -16,15 +17,37 @@ llm:
   active: llamacpp-qwen35-9b
   profiles:
     llamacpp-qwen35-9b:
+      label: 本机 Qwen3.5-9B
       base_url: http://127.0.0.1:${LLM_PORT}/v1
       model: qwen3.5-9b
       api_key: ""
       history_messages: 20    # turns kept in the prompt; see teaching.block
     vllm-qwen38-27b:
+      label: 本机 Qwen3.8-27B
       base_url: http://127.0.0.1:${LLM_PORT}/v1
       model: qwen3.8-27b-nvfp4
       api_key: ""
       history_messages: 40
+    # vLLM on another host in the LAN. It answers the same API, so nothing
+    # else changes; keep in mind that a turn now depends on two machines
+    # (and on this host reaching that one: a request that cannot get
+    # through is reported to the client as an error, like any other).
+    vllm-qwen38-flash-lan:
+      label: 局域网 Qwen3.8-Flash
+      base_url: http://gb10.local:9999/v1
+      model: qwen3.8-flash-next
+      api_key: ${QWEN38_API_KEY}
+      history_messages: 20
+      # This model reasons before it answers, and the orchestrator reads
+      # only content deltas, so the reasoning would be discarded while
+      # still costing the wait: measured on this host, TTFT went from
+      # 1.7 s to 0.18 s once thinking was off. vLLM takes the switch as an
+      # extra body field; llama.cpp has its own server-side flag.
+      extra_body:
+        chat_template_kwargs: {enable_thinking: false}
+      # A host on the LAN is one more thing that can be slow or gone, so
+      # it gets a shorter leash than the loopback backend (180 s default).
+      timeout: 30
   sampling:            # official non-thinking settings for Qwen3.5
     temperature: 0.7
     top_p: 0.8

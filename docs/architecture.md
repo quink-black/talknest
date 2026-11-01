@@ -55,11 +55,37 @@ sidecar 在启动时自动选择设备：有 CUDA 就用 CUDA，否则用 MPS，
 CUDA 与 MPS 都使用 bfloat16：在 MPS 上，float16 会使采样器溢出并拒绝自己
 生成的概率张量，而 bfloat16 的指数范围更宽，不会出现这个问题。
 
-## 换更大的 LLM
+## 换一个 LLM
 
-修改 `server/config.yaml` 的 `llm.active` 一行，可以切换到
-Qwen3.8-27B-NVFP4（vLLM）。切换时要先停止 9B，再启动 27B，因为两者共用
-同一块显存。27B 需要远大于 12 GB 的显存。
+`server/config.yaml` 的 `llm.profiles` 里每个条目是一个后端：`llm.active`
+指向的那一个就是当前使用的。改这一行并重启编排器即可换过去，也可以在界面
+的“模型”下拉里直接换（等价于 `POST /llm`），下一个回合就走新的模型，对话
+不会清空。
+
+已配置的后端：
+
+| profile | 模型 | 位置 |
+|---|---|---|
+| `llamacpp-qwen35-9b` | Qwen3.5-9B MTP GGUF | 本机 llama.cpp，`LLM_PORT`（8893） |
+| `vllm-qwen38-27b` | Qwen3.8-27B-NVFP4 | 本机 vLLM，同一端口 |
+| `vllm-qwen38-flash-lan` | Qwen3.8-Flash-Next | 局域网内另一台主机的 vLLM |
+
+9B 与 27B 共用同一块显存，切换时要先停掉一个再启动另一个，而且 27B 需要
+远大于 12 GB 的显存。指向局域网的 profile 需要 `QWEN38_API_KEY`（写在
+`config.yaml` 里，由环境变量展开）， orchestrator 进程的环境里必须有它。
+
+所有后端都提供 OpenAI 的 chat-completions 接口，所以编排器里没有按后端
+分支的代码；各后端的差异放在 profile 自己的字段里：
+
+- `api_key`：局域网上的服务需要它，本机服务为空。
+- `extra_body`：按后端补进请求体的字段。局域网上的 Qwen3.8-Flash 默认会先
+  推理再回答，而编排器只读取 content，推理的内容会被丢掉、等待时间却照付
+  （实测 TTFT 1.7 s，关闭后 0.18 s），所以用 vLLM 的
+  `chat_template_kwargs` 关掉它；llama.cpp 一侧是在启动参数里关的。
+- `timeout`：局域网后端另有一台机器可能慢或者不在，因此给比本机后端更短的
+  超时（默认 180 s）。请求打不通时与任何其他错误一样，作为一条 error 事件
+  报给客户端，不会中断连接。
+- `history_messages`：带进提示词的历史条数。
 
 ## 硬件与软件要求
 

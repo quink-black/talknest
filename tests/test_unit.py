@@ -3,6 +3,7 @@
 Run: ./venv/bin/python -m pytest tests/ -v
 """
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -10,11 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 
 from orchestrator.asr import in_scope, parse_transcript
 from orchestrator.config import load
 from orchestrator.main import (SENTENCE_MIN_CHARS, THINK_RE, barge_in_due,
-                               clean_for_tts, extract_sentences)
+                               clean_for_tts, extract_sentences, llm_client,
+                               llm_state, set_llm)
 from orchestrator.tts import time_stretch
 from orchestrator.vad import FRAME_MS, Resampler, StreamVAD
 
@@ -289,6 +292,33 @@ class TestStreamVAD:
         assert sv.active is False
         assert sv.speech_ms == 0.0
         assert sv.vad.resets == resets + 2  # Silero state restarts per turn
+
+
+class TestLlmProfiles:
+    """A profile is a whole backend, and the active one can move at runtime."""
+
+    def test_client_follows_its_profile(self, config):
+        # extra_body is what turns a reasoning model's thinking off; a
+        # client that dropped it would stream nothing but reasoning.
+        for name, p in config["llm"]["profiles"].items():
+            client = llm_client(name)
+            assert client.model == p["model"]
+            assert client.base_url == p["base_url"].rstrip("/")
+            assert client.extra_body == (p.get("extra_body") or {})
+
+    def test_switch_moves_the_active_profile(self, config):
+        first = llm_state()["active"]
+        other = next(n for n in config["llm"]["profiles"] if n != first)
+        try:
+            assert asyncio.run(set_llm({"profile": other}))["active"] == other
+            assert llm_state()["active"] == other
+        finally:
+            asyncio.run(set_llm({"profile": first}))
+        assert llm_state()["active"] == first
+
+    def test_unknown_profile_is_refused(self):
+        with pytest.raises(HTTPException):
+            asyncio.run(set_llm({"profile": "no-such-backend"}))
 
 
 class TestBargeInDue:

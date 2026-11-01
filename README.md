@@ -229,7 +229,10 @@ macOS 没有 systemd，常驻运行使用 `scripts/start.sh -d`。
 ```
 
 `tests/ws_speaker_smoke.py` 测试声纹，需要先在另一个端口启动服务，用法见
-脚本头部。`scripts/bench_llm.py` 测量 LLM 延迟。`scripts/eval_teaching.py`
+脚本头部。`scripts/bench_llm.py` 测量 LLM 延迟；给 `--profile`（可重复）就
+按 `server/config.yaml` 里配置的后端逐个测，例如
+`--profile llamacpp-qwen35-9b --profile vllm-qwen38-flash-lan` 会输出两者的
+对比。`scripts/eval_teaching.py`
 用模拟的孩子进行若干轮对话，检查教学计划是否被执行，并测量计划块带来的
 延迟，运行时 LLM 必须已经启动。
 

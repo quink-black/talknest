@@ -686,7 +686,7 @@ class TestTurnPrompt:
         session.history.extend(
             {"role": "user", "content": f"u{i}"} for i in range(40))
         assert len(main.build_messages(session, "now")) == \
-            main.HISTORY_MESSAGES + 2
+            main.history_messages() + 2
 
     def test_function_words_are_taught_but_not_counted(self, session):
         assert "i" in session.vocab
@@ -864,7 +864,7 @@ class TestFloor:
         ws = _FakeWS()
         tts = _FakeTTS()
         tts.spoken = []
-        monkeypatch.setattr(main, "llm", _ChunkedLLM(reply))
+        monkeypatch.setattr(main, "llm_client", lambda name=None: _ChunkedLLM(reply))
         monkeypatch.setattr(main, "asr", _FakeASR(heard))
         monkeypatch.setattr(main, "tts", tts)
         asyncio.run(main.handle_utterance(ws, session, None, asyncio.Event()))
@@ -1051,7 +1051,7 @@ class TestFreeTalk:
 
     def test_a_free_reply_does_not_open_a_drill(self, session, monkeypatch):
         session.set_free(True)
-        monkeypatch.setattr(main, "llm", _ChunkedLLM("跟我读一遍：moon！"))
+        monkeypatch.setattr(main, "llm_client", lambda name=None: _ChunkedLLM("跟我读一遍：moon！"))
         monkeypatch.setattr(main, "asr", _FakeASR("moon"))
         tts = _FakeTTS()
         tts.spoken = []
@@ -1121,7 +1121,7 @@ class TestEndpoints:
 class TestCompaction:
     def _session(self, tmp_path, monkeypatch, turns):
         monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
-        monkeypatch.setattr(main, "HISTORY_MESSAGES", 4)
+        monkeypatch.setattr(main, "history_messages", lambda: 4)
         monkeypatch.setattr(main, "COMPACT_MESSAGES", 2)
         session = main.Session()
         session.open_learner("tester")
@@ -1131,7 +1131,7 @@ class TestCompaction:
         return session
 
     def test_oldest_turns_are_folded_in(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(main, "llm", FakeLLM("聊过颜色和猫"))
+        monkeypatch.setattr(main, "llm_client", lambda name=None: FakeLLM("聊过颜色和猫"))
         session = self._session(tmp_path, monkeypatch, 6)
         asyncio.run(main.compact_history(session))
         assert session.summary == "聊过颜色和猫"
@@ -1139,7 +1139,7 @@ class TestCompaction:
         session.close()
 
     def test_nothing_happens_below_the_threshold(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(main, "llm", FakeLLM("聊过颜色和猫"))
+        monkeypatch.setattr(main, "llm_client", lambda name=None: FakeLLM("聊过颜色和猫"))
         session = self._session(tmp_path, monkeypatch, 5)
         asyncio.run(main.compact_history(session))
         assert session.summary == ""
@@ -1153,7 +1153,7 @@ class TestCompaction:
                 raise RuntimeError("model is down")
                 yield ""
 
-        monkeypatch.setattr(main, "llm", Broken())
+        monkeypatch.setattr(main, "llm_client", lambda name=None: Broken())
         session = self._session(tmp_path, monkeypatch, 6)
         asyncio.run(main.compact_history(session))
         assert len(session.history) == 6

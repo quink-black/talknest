@@ -242,6 +242,10 @@
     <div class="devices">
       <label class="dev">麦克风 <select id="micSelect"></select></label>
       <label class="dev">扬声器 <select id="spkSelect"></select></label>
+      <!-- Filled from GET /llm: every profile in config.yaml, including a
+           backend on another host. Changing it moves the next turn only;
+           the conversation stays where it is. -->
+      <label class="dev" id="llmLabel" hidden>模型 <select id="llm"></select></label>
     </div>
     <p class="hint" id="deviceHint"></p>
 

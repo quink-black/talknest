@@ -1243,6 +1243,20 @@ for (const row of document.querySelectorAll(".vprow")) {
   row.querySelector(".vpClear").addEventListener("click", () => clearSpeaker(role));
 }
 
+$("llm").addEventListener("change", async (e) => {
+  try {
+    const r = await fetch("llm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: e.target.value }),
+    });
+    if (!r.ok) throw new Error(r.status);
+  } catch (err) {
+    /* The switch did not take: show the server's choice again. */
+    loadLlm();
+  }
+});
+
 /* Modes are free-form in the server config; the dropdown is built from
    GET /modes so a new age group there shows up without touching this
    page. The static options in index.html are only a fetch fallback. */
@@ -1267,6 +1281,26 @@ async function loadModes() {
   } catch (e) { /* offline or old server: keep the static options */ }
 }
 
+/* Which model answers: the profiles come from the server config, so a
+   backend on another host shows up here without touching this page. */
+async function loadLlm() {
+  try {
+    const r = await fetch("llm");
+    if (!r.ok) return;
+    const data = await r.json();
+    const sel = $("llm");
+    sel.innerHTML = "";
+    for (const p of data.profiles) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.label || p.name;
+      sel.appendChild(opt);
+    }
+    sel.value = data.active;
+    $("llmLabel").hidden = false;
+  } catch (e) { /* offline or old server: nothing to choose from */ }
+}
+
 if (mediaAvailable()) {
   navigator.mediaDevices.addEventListener("devicechange", () => scheduleRecheck());
 }
@@ -1279,7 +1313,7 @@ scheduleYawWander();
 scheduleYawSpin();
 
 loadModes().then(loadLearners).then(loadUnits).then(loadWords)
-  .then(loadSpeakers).finally(connect);
+  .then(loadSpeakers).then(loadLlm).finally(connect);
 checkSecureContext();
 syncDeviceUi();
 scheduleRecheck(WATCHDOG_MS);  // start the periodic look

@@ -10,14 +10,26 @@ import httpx
 
 
 class LLMClient:
-    def __init__(self, base_url: str, model: str, api_key: str, sampling: dict):
+    def __init__(self, base_url: str, model: str, api_key: str, sampling: dict,
+                 extra_body: dict | None = None, timeout: float = 180.0):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.headers = {}
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
         self.sampling = sampling
-        self._client = httpx.AsyncClient(timeout=180.0, trust_env=False)
+        # Backend-specific request fields a profile may need, e.g. vLLM's
+        # chat_template_kwargs to switch a reasoning model's thinking off.
+        self.extra_body = dict(extra_body or {})
+        self._client = httpx.AsyncClient(timeout=timeout, trust_env=False)
+
+    @classmethod
+    def from_profile(cls, profile: dict, sampling: dict) -> "LLMClient":
+        """Build a client from one `llm.profiles` entry of config.yaml."""
+        return cls(profile["base_url"], profile["model"],
+                   profile.get("api_key", ""), sampling,
+                   extra_body=profile.get("extra_body"),
+                   timeout=float(profile.get("timeout", 180.0)))
 
     async def stream_chat(
         self, messages: list[dict], cancel: asyncio.Event | None = None,
@@ -34,6 +46,7 @@ class LLMClient:
             "top_k": self.sampling.get("top_k", 20),
             "presence_penalty": self.sampling.get("presence_penalty", 1.5),
         }
+        body.update(self.extra_body)
         async with self._client.stream(
             "POST", f"{self.base_url}/chat/completions",
             json=body, headers=self.headers,
