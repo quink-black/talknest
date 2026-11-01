@@ -585,7 +585,7 @@ async def write_portrait(sess: Session):
     summary cannot cost the child a reply.
     """
     try:
-        await digest.write(llm, sess.store,
+        await digest.write(llm_client(), sess.store,
                            profile.path_for(data_root(), sess.learner),
                            sess.session_id)
     except Exception as e:

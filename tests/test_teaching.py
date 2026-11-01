@@ -448,6 +448,28 @@ class TestDigest:
             profile.path_for(tmp_path, "tester"), sid)) is False
         store.close()
 
+    def test_portrait_write_uses_the_active_client(self, tmp_path, monkeypatch):
+        # The digest call used to name a module-level `llm` that the
+        # profile switch removed, so every portrait update raised NameError
+        # inside the try and was logged as a failed update.
+        store = Store("tester", tmp_path)
+        sess = main.Session()
+        sess.learner = "tester"
+        sess.store = store
+        sess.session_id = store.start_session("kid")
+        client = FakeLLM("本次: 聊了猫")
+        seen = []
+
+        async def fake_write(llm, store_, path, session_id):
+            seen.append(llm)
+            return True
+
+        monkeypatch.setattr(main.digest, "write", fake_write)
+        monkeypatch.setattr(main, "llm_client", lambda: client)
+        asyncio.run(main.write_portrait(sess))
+        assert seen == [client]
+        store.close()
+
     def test_portrait_reaches_the_plan(self, store):
         portrait = profile.Profile(notes=["喜欢恐龙", "怕黑"], recent=["聊了猫"])
         plan = scheduler.plan(store, UNITS,
