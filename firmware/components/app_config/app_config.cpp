@@ -20,10 +20,19 @@ bool read_string(cJSON *root, const char *name, std::string &value, bool require
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
     if (!cJSON_IsString(item) || item->valuestring == nullptr) {
+        if (required) {
+            ESP_LOGE(TAG, "Missing required string field: %s", name);
+        }
         return !required;
     }
     value = item->valuestring;
-    return !value.empty();
+    /* An optional field may be written empty: an open network has no
+     * password and an overlay may blank mode or learner. */
+    if (value.empty() && required) {
+        ESP_LOGE(TAG, "Required string field is empty: %s", name);
+        return false;
+    }
+    return true;
 }
 
 bool parse_config(cJSON *root, AppConfig &config, bool require_identity)
