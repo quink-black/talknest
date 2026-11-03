@@ -54,10 +54,6 @@ bool parse_config(cJSON *root, AppConfig &config, bool require_identity)
     if (cJSON_IsNumber(item)) {
         config.capture_gain = static_cast<float>(item->valuedouble);
     }
-    item = cJSON_GetObjectItemCaseSensitive(root, "aec_delay_ms");
-    if (cJSON_IsNumber(item)) {
-        config.aec_delay_ms = item->valueint;
-    }
     item = cJSON_GetObjectItemCaseSensitive(root, "playback_prebuffer_ms");
     if (cJSON_IsNumber(item)) {
         config.playback_prebuffer_ms = item->valueint;
@@ -83,9 +79,6 @@ esp_err_t validate_config(const AppConfig &config)
     if (!std::isfinite(config.capture_gain) || config.capture_gain < 0.1F ||
         config.capture_gain > 16.0F) {
         return invalid("capture_gain");
-    }
-    if (config.aec_delay_ms < 0 || config.aec_delay_ms > 500) {
-        return invalid("aec_delay_ms");
     }
     if (config.playback_prebuffer_ms < 200 ||
         config.playback_prebuffer_ms > 5000) {

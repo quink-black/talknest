@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
 from .asr import ASRClient, DEFAULT_LANGUAGES
-from .config import data_root, load
+from .config import data_root, load, model_root
 from .llm import LLMClient
 from . import speaker
 from .teaching import (curriculum, digest, match, profile, readback,
@@ -92,6 +92,13 @@ SENT_END = re.compile(r"[.!?…。！？；;]|(?:\n)")
 MD_SYMBOLS_RE = re.compile(r"[*_`#>~\[\]]+")
 
 VAD_CFG = cfg["vad"]
+# Server-side AEC for clients that upload [mic, reference] stereo (the
+# ESP32 terminal). Model files are the CLI's DTLN weights; the prefix
+# points at dtln-aec/dtln_aec_128 in the checkout unless configured.
+AEC_CFG = cfg.get("aec", {})
+AEC_ENABLED = bool(AEC_CFG.get("enabled", False))
+AEC_MODEL_PREFIX = str(AEC_CFG.get("model_prefix", "")) or str(
+    model_root() / "dtln-aec" / "dtln_aec_128")
 BARGE_IN_MS = VAD_CFG.get("barge_in_ms", 400)
 BARGE_IN_GRACE_MS = VAD_CFG.get("playback_grace_ms", 300)
 BARGE_IN_THRESHOLD = VAD_CFG.get("barge_in_threshold", 0.75)
@@ -264,6 +271,9 @@ class Session:
         self.cancel: asyncio.Event | None = None
         self.speaking = False      # audio is on its way to the client
         self.speaking_since = 0.0
+        # Stereo-upstream sessions cancel echo in this worker thread before
+        # their audio reaches self.q; None on mono clients.
+        self.aec = None
         # Spans the whole turn, from VAD close to the last audio frame.
         # Unlike `speaking` it covers the silent ASR -> LLM -> TTS stretch,
         # which is the part where an impatient re-ask used to cancel the
@@ -926,6 +936,34 @@ async def ws_endpoint(ws: WebSocket):
                     await send_json(ws, {"type": "mode", "value": sess.mode})
                     await send_json(ws, free_message(sess))
                 elif mtype == "start":
+                    channels = data.get("channels", 1)
+                    if channels not in (1, 2):
+                        await send_json(ws, {"type": "error",
+                                             "message": f"unsupported channels {channels}"})
+                        await ws.close()
+                        break
+                    if channels == 2 and sess.aec is None:
+                        problem = None
+                        if not AEC_ENABLED:
+                            problem = "disabled (aec.enabled in config.yaml)"
+                        else:
+                            try:
+                                from .aec import DtlnAec
+                                from .aec_stream import UpstreamAec
+                                sess.aec = UpstreamAec(DtlnAec(AEC_MODEL_PREFIX))
+                                sess.aec.start(asyncio.get_running_loop(), sess.q)
+                            except Exception as exc:
+                                sess.aec = None
+                                problem = str(exc)
+                                log.warning("Upstream AEC failed to start: %s", exc)
+                        if problem is not None:
+                            # Echo would reach the VAD uncancelled and the
+                            # assistant would interrupt itself, so refuse the
+                            # stream instead of degrading silently.
+                            await send_json(ws, {"type": "error",
+                                                 "message": f"server AEC unavailable: {problem}"})
+                            await ws.close()
+                            break
                     if not sess.streaming:
                         sess.streaming = True
                         sess.vad_task = asyncio.create_task(vad_task(ws, sess))
@@ -936,6 +974,9 @@ async def ws_endpoint(ws: WebSocket):
                     if sess.vad_task:
                         sess.vad_task.cancel()
                         sess.vad_task = None
+                    if sess.aec is not None:
+                        sess.aec.stop()
+                        sess.aec = None
                 elif mtype == "interrupt":
                     sess.turn_barged = True
                     await send_json(ws, {"type": "stop_playback", "reason": "manual"})
@@ -964,7 +1005,10 @@ async def ws_endpoint(ws: WebSocket):
                 elif mtype == "ping":
                     await send_json(ws, {"type": "pong"})
             elif (data := msg.get("bytes")) is not None and sess.streaming:
-                sess.q.put_nowait(data)
+                if sess.aec is not None:
+                    sess.aec.feed(data)
+                else:
+                    sess.q.put_nowait(data)
     except WebSocketDisconnect:
         pass
     finally:
@@ -972,6 +1016,9 @@ async def ws_endpoint(ws: WebSocket):
         await cancel_turn(sess)
         if sess.vad_task:
             sess.vad_task.cancel()
+        if sess.aec is not None:
+            sess.aec.stop()
+            sess.aec = None
         if DIGEST_MODE == "on_disconnect" and sess.session_id is not None:
             await write_portrait(sess)
         sess.close()

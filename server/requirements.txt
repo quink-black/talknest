@@ -6,3 +6,6 @@ numpy>=1.26
 soundfile>=0.12
 onnxruntime>=1.18
 pyyaml>=6
+# Server-side AEC for stereo-upstream clients (see server/config.yaml aec:)
+ai-edge-litert>=1.2
+soxr>=0.5

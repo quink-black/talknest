@@ -50,6 +50,7 @@ private:
     void manager_loop();
     void sender_loop();
     void send_initial_messages();
+    void send_start();
     void send_json(const char *type, const char *value = nullptr);
     void send_binary(const int16_t *pcm, size_t sample_count);
     void handle_text(const char *data, size_t length);

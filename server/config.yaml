@@ -106,6 +106,14 @@ vad:
   # child waiting for an answer says "喂?" and must not lose the answer.
   pending_barge_in_ms: 1200
 
+# Server-side echo cancellation for clients that upload [microphone,
+# playback reference] stereo -- the ESP32 terminal with full_duplex=true.
+# The weights are the CLI client's DTLN models; without them a stereo
+# start is refused instead of letting echo through to the VAD.
+aec:
+  enabled: true
+  # model_prefix: /path/to/dtln_aec_128   # default: dtln-aec/ in the checkout
+
 # Who is talking: child, dad or mom, told apart by voiceprint. Each family
 # member enrolls a few clips from the page; matching starts once the child
 # and at least one parent are enrolled. The model runs on the CPU. Without

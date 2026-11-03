@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <memory>
 
 #include "board_audio.hpp"
 #include "esp_err.h"
@@ -20,12 +19,11 @@ struct AudioPipelineConfig {
     int speaker_volume = 65;
     float mic_gain_db = 24.0F;
     float capture_gain = 8.0F;
+    /* True streams [MIC1, playback reference] stereo upstream so the server
+     * can cancel echo; false keeps the mono half-duplex path. */
     bool full_duplex = false;
-    int aec_delay_ms = 0;
     int playback_prebuffer_ms = 500;
 };
-
-struct AudioProcessingState;
 
 class AudioPipeline {
 public:
@@ -38,6 +36,7 @@ public:
     void stop();
 
     bool read_upstream(int16_t *pcm, TickType_t timeout);
+    size_t upstream_channels() const { return upstream_channels_; }
     bool upstream_allowed() const;
     void clear_upstream();
 
@@ -49,15 +48,15 @@ public:
 
 private:
     static constexpr size_t PLAYBACK_BLOCK_SAMPLES = 480;
-    static constexpr size_t UPSTREAM_BUFFER_BYTES = 9600;
+    static constexpr size_t UPSTREAM_BUFFER_BYTES_PER_CHANNEL = 9600;
     /* Hold a whole turn so a slow 2.4 GHz link cannot overflow the queue. */
     static constexpr size_t PLAYBACK_BUFFER_BYTES = 1440000;
     static constexpr EventBits_t CAPTURE_STOPPED = 1U << 0;
     static constexpr EventBits_t PLAYBACK_STOPPED = 1U << 1;
-    static constexpr EventBits_t AFE_STOPPED = 1U << 2;
 
     AudioPipelineConfig config_;
     std::function<void()> playback_finished_callback_;
+    size_t upstream_channels_ = 1;
     StreamBufferHandle_t upstream_buffer_ = nullptr;
     StreamBufferHandle_t playback_buffer_ = nullptr;
     StaticStreamBuffer_t *playback_buffer_struct_ = nullptr;
@@ -67,7 +66,6 @@ private:
     EventGroupHandle_t stopped_events_ = nullptr;
     TaskHandle_t capture_task_ = nullptr;
     TaskHandle_t playback_task_ = nullptr;
-    TaskHandle_t afe_task_ = nullptr;
     std::atomic<bool> initialized_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> playback_active_{false};
@@ -78,13 +76,10 @@ private:
     size_t playback_prebuffer_bytes_ = 0;
     TickType_t playback_begin_tick_ = 0;
     TickType_t last_playback_write_ = 0;
-    std::unique_ptr<AudioProcessingState> processing_state_;
 
     void capture_loop();
     void playback_loop();
-    void afe_loop();
     void finish_playback(uint32_t generation);
     static void capture_task_entry(void *argument);
     static void playback_task_entry(void *argument);
-    static void afe_task_entry(void *argument);
 };

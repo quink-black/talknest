@@ -142,7 +142,7 @@ sidecar 可以用 `QWEN_TTS_DEVICE` 指定 PyTorch 设备，因此 AMD GPU 或�
 | `Qwen3-TTS-Tokenizer-12Hz/` | TTS 分词器 | [Hugging Face: Qwen/Qwen3-TTS-Tokenizer-12Hz](https://huggingface.co/Qwen/Qwen3-TTS-Tokenizer-12Hz) |
 | `silero-vad/silero_vad.onnx` | VAD | [GitHub: snakers4/silero-vad](https://github.com/snakers4/silero-vad)，文件位于 `src/silero_vad/data/` |
 | `speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx` | 声纹，可选 | [GitHub: k2-fsa/sherpa-onnx 的 speaker-recongition-models 发布页](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) |
-| `dtln-aec/dtln_aec_128_{1,2}.tflite` | 终端客户端的回声取消，可选 | [GitHub: breizhn/DTLN-aec](https://github.com/breizhn/DTLN-aec)，文件位于 `pretrained_models/` |
+| `dtln-aec/dtln_aec_128_{1,2}.tflite` | 回声取消，服务端与 CLI 客户端共用（`server/orchestrator/aec.py`）；ESP32 双通道上行的语音打断依赖服务端的这份 | [GitHub: breizhn/DTLN-aec](https://github.com/breizhn/DTLN-aec)，文件位于 `pretrained_models/` |
 
 上表中 Qwen 系列与 unsloth 的权重在 ModelScope 上有同名仓库，网络访问
 Hugging Face 不便时，可以把下面命令中的 `hf download` 换成

@@ -20,7 +20,7 @@ TalkNest 现有 `/ws` 协议可以直接复用：上行是 24 kHz little-endian 
 ## 非目标
 
 - 不增加唤醒词、本地 ASR/LLM/TTS、网页配网或屏幕设置菜单。
-- 不修改 TalkNest 协议、不增加服务端鉴权，不承诺睡眠后恢复原会话。
+- 不修改 TalkNest 下行协议；上行允许通过 `start` 消息的 `channels` 字段声明双通道扩展（见 `docs/design/server-side-aec.md`）。不增加服务端鉴权，不承诺睡眠后恢复原会话。
 - 不加入 OTA、复杂电源轨调参或 3D 资源。
 - 不通过降低服务端 barge-in 阈值来掩盖回声消除问题。
 
@@ -33,7 +33,7 @@ TalkNest 现有 `/ws` 协议可以直接复用：上行是 24 kHz little-endian 
 | `app_main` | 启动顺序、组件装配、致命错误处理 |
 | `app_config` | 读取构建时嵌入的 JSON 和 CA，校验唯一 WSS 配置来源 |
 | `board` | I2C、音频 codec、I2S、PA、AXP2101 最小初始化 |
-| `audio_pipeline` | TDM 槽位提取、双麦/参考排列、可选 AFE/AEC、PCM 环形缓冲 |
+| `audio_pipeline` | TDM 槽位提取、单/双通道上行排列、PCM 环形缓冲 |
 | `talknest_client` | Wi-Fi、SNTP、WSS、JSON 事件、二进制帧、重连和播放确认 |
 | `power_manager` | PWR 防抖、睡眠准备、GPIO10 唤醒和外设恢复 |
 | `ui_status` | LVGL 状态页、错误页、触摸打断；向未来 UI 暴露统一状态接口 |
@@ -46,9 +46,9 @@ I2S 回调只搬运样本。采集/AFE 与播放放在高优先级音频任务�
 
 先打通 24 kHz 基础链路：RX 从 TDM 四槽提取 MIC1、ES8311 回采、MIC2，TX 将 mono 复制到左右声道，并直接调用 `esp_codec_dev_read()` 与 `esp_codec_dev_write()` 传输 16 位 PCM。基础链路不做采样率或位宽转换；`audio_start.sample_rate` 不是 24 kHz 时拒绝播放。基础链路在播放期间关闭上行门控，避免助手声音被误识别，但不发送 `stop` 切断回答；播放结束或被打断后，半双工路径会清空上行缓冲，避免把刚播出的回声当作下一句话。
 
-随后接入官方 factory 已使用的 ESP-AFE：24 kHz 采集经有状态的 2:3 抗混叠抽取到 16 kHz，AEC/降噪后再以 3:2 插值回到协议要求的 24 kHz；关闭本地唤醒词和本地 VAD，仍由服务端判句。播放参考保持连续时间线，静音也进入参考流。该路径与现有 Python CLI 的 16 kHz AEC 加双向重采样一致，并且只在 `full_duplex=true` 时初始化，半双工默认路径不加载模型、不做重采样。
+全双工语音打断不使用设备端 ESP-SR AFE：真机测量表明该路径单核接近满载（121344 样本 / 5 秒对实时的 120000），与播放任务互相挤占，且协议的 24 kHz 与 AFE 的 16 kHz 之间双向重采样是设备上的纯开销。取而代之的是服务端 AEC：`full_duplex=true` 时上行改为双通道交错 24 kHz——slot 0（MIC1）与 slot 1（ES8311 回采），两路同源同钟、样本级对齐，播放静音期间回采自然连续；服务端用 DTLN 消除回声后交给既有 VAD 与打断判定，打断仍通过 `stop_playback` 下发。协议扩展、服务端改动与验收标准见 `docs/design/server-side-aec.md`。
 
-只有真机验证“纯助手语音不自我打断、真人插话能可靠停止、停止后第二问完整识别”后，才默认启用全双工语音打断。若参考延迟、槽位或性能未达标，则保留稳定半双工和触摸打断，并明确报告限制，不伪装为已完成。
+只有真机验证“纯助手语音不自我打断、真人插话能可靠停止、停止后第二问完整识别”后，才默认启用全双工语音打断。若服务端 AEC 未启用或验收不达标，则保留稳定半双工和触摸打断，并明确报告限制，不伪装为已完成。
 
 ## 配置与 TLS
 

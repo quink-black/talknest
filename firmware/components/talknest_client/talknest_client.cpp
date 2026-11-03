@@ -184,7 +184,7 @@ void TalkNestClient::manager_loop()
 
 void TalkNestClient::sender_loop()
 {
-    int16_t pcm[TALKNEST_PCM_FRAME_SAMPLES];
+    std::vector<int16_t> pcm(TALKNEST_PCM_FRAME_SAMPLES * 2);
     TickType_t last_ping = xTaskGetTickCount();
     while (running_) {
         if (initial_messages_pending_.exchange(false) && connected_) {
@@ -194,11 +194,12 @@ void TalkNestClient::sender_loop()
             send_json("ping");
             last_ping = xTaskGetTickCount();
         }
-        if (!audio_.read_upstream(pcm, pdMS_TO_TICKS(100))) {
+        if (!audio_.read_upstream(pcm.data(), pdMS_TO_TICKS(100))) {
             continue;
         }
+        const size_t sample_count = TALKNEST_PCM_FRAME_SAMPLES * audio_.upstream_channels();
         if (connected_ && audio_.upstream_allowed()) {
-            send_binary(pcm, TALKNEST_PCM_FRAME_SAMPLES);
+            send_binary(pcm.data(), sample_count);
         }
     }
     xEventGroupSetBits(events_, SENDER_STOPPED);
@@ -216,7 +217,32 @@ void TalkNestClient::send_initial_messages()
     if (!config_.learner.empty()) {
         send_json("learner", config_.learner.c_str());
     }
-    send_json("start");
+    send_start();
+}
+
+void TalkNestClient::send_start()
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "type", "start");
+    if (config_.full_duplex) {
+        cJSON_AddNumberToObject(root, "channels", 2);
+    }
+    char *serialized = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (serialized == nullptr) {
+        return;
+    }
+    if (xSemaphoreTake(send_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (websocket_ != nullptr) {
+            esp_websocket_client_send_text(websocket_, serialized, std::strlen(serialized),
+                                           pdMS_TO_TICKS(1000));
+        }
+        xSemaphoreGive(send_mutex_);
+    }
+    cJSON_free(serialized);
 }
 
 void TalkNestClient::send_json(const char *type, const char *value)
