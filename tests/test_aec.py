@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "client"))
 from orchestrator.aec import DtlnAec, erle_db  # noqa: E402
 from orchestrator.aec_stream import UpstreamAec  # noqa: E402
 from orchestrator.config import model_root  # noqa: E402
+from orchestrator.wiener_aec import WienerAec  # noqa: E402
 
 SR = 24000
 MODEL_PREFIX = model_root() / "dtln-aec" / "dtln_aec_128"
@@ -63,6 +64,43 @@ def test_cli_shim_exports_shared_module():
 
     assert cli_aec.DtlnAec is DtlnAec
     assert cli_aec.erle_db is erle_db
+
+
+def test_wiener_converges_and_cancels_onsets_after_a_gap():
+    """The linear stage must cancel immediately at a fresh far-end onset.
+
+    That is the property the neural canceller lacks: its mask reconverges
+    for a few hundred milliseconds after silence, which is exactly the
+    window that used to trip the VAD.
+    """
+    rng = np.random.default_rng(11)
+    path = np.zeros(2048)
+    path[640:644] = [0.6, 0.2, 0.1, 0.05]
+    sr = 16000
+
+    def burst(seconds):
+        ref = rng.standard_normal(int(seconds * sr)) * 0.2
+        return ref, np.convolve(ref, path)[:ref.size]
+
+    aec = WienerAec(taps=2048)
+    ref1, mic1 = burst(2.5)
+    out1 = np.zeros(0)
+    for i in range(0, len(mic1), 128):
+        out1 = np.concatenate([out1, aec.process(mic1[i:i + 128], ref1[i:i + 128])])
+    settled = slice(int(1.5 * sr), int(2.5 * sr))
+    assert erle_db(mic1[settled], out1[settled]) > 15.0
+
+    gap = int(1.0 * sr)
+    aec.process(np.zeros(gap), np.zeros(gap))
+    ref2, mic2 = burst(1.0)
+    out2 = np.zeros(0)
+    for i in range(0, len(mic2), 128):
+        out2 = np.concatenate([out2, aec.process(mic2[i:i + 128], ref2[i:i + 128])])
+    # The estimate is frozen across the gap, so the new onset cancels from
+    # its first samples, not after re-convergence.
+    onset = slice(0, int(0.5 * sr))
+    assert erle_db(mic2[onset], out2[onset]) > 10.0
+    assert np.isfinite(out2).all()
 
 
 def test_stereo_frame_layout_roundtrip():

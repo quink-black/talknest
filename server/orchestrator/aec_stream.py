@@ -20,6 +20,8 @@ import threading
 
 import numpy as np
 
+from .wiener_aec import WienerAec
+
 try:
     import soxr
 except ImportError:  # guarded again in UpstreamAec.start(); keep import safe
@@ -55,6 +57,9 @@ class UpstreamAec:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._out: asyncio.Queue | None = None
         self._rs_mic = self._rs_ref = self._rs_out = None
+        # Linear pre-stage: removes the (static) linear echo at once at
+        # every far-end onset, before the neural canceller re-converges.
+        self._wiener = WienerAec()
         # Rolling diagnostic capture of the last seconds per channel,
         # dumped by dump() when the server suspects an echo leak.
         self._dbg: dict[str, list] = {"mic": [], "ref": [], "out": []}
@@ -148,13 +153,15 @@ class UpstreamAec:
             frames = pcm.reshape(-1, 2)
             mic = _pcm_to_float(frames[:, 0])
             ref = _pcm_to_float(frames[:, 1])
-            self._aec.push_reference(
-                self._rs_ref.resample_chunk(_pcm_to_float(frames[:, 1]),
-                                            last=False))
-            cleaned = self._aec.process(
-                self._rs_mic.resample_chunk(mic, last=False))
-            out = self._rs_out.resample_chunk(cleaned.astype(np.float32),
-                                              last=False)
+            mic16 = self._rs_mic.resample_chunk(mic, last=False)
+            ref16 = self._rs_ref.resample_chunk(ref, last=False)
+            n16 = min(mic16.size, ref16.size)
+            # Linear stage first, then the neural canceller on what is left.
+            linear = self._wiener.process(
+                mic16[:n16].astype(np.float64), ref16[:n16].astype(np.float64))
+            self._aec.push_reference(ref16[:n16])
+            cleaned = self._aec.process(linear.astype(np.float32))
+            out = self._rs_out.resample_chunk(cleaned, last=False)
             acc["mic"] += float(np.sum(mic ** 2))
             acc["ref"] += float(np.sum(ref ** 2))
             acc["out"] += float(np.sum(out ** 2))
@@ -172,8 +179,10 @@ class UpstreamAec:
                 rms = {k: (v / acc_n) ** 0.5 for k, v in acc.items()}
                 db = {k: (20 * np.log10(v) if v > 1e-12 else -120.0)
                       for k, v in rms.items()}
-                log.info("AEC levels: mic=%.0f dBFS ref=%.0f dBFS out=%.0f dBFS",
-                         db["mic"], db["ref"], db["out"])
+                log.info("AEC levels: mic=%.0f dBFS ref=%.0f dBFS out=%.0f dBFS "
+                         "(wiener solves=%d adopted=%d)",
+                         db["mic"], db["ref"], db["out"],
+                         self._wiener.solves, self._wiener.adopted)
                 acc = {k: 0.0 for k in acc}
                 acc_n = 0
             if out.size == 0:
