@@ -127,6 +127,12 @@ esp_err_t AudioPipeline::initialize(const AudioPipelineConfig &config,
 {
     config_ = config;
     playback_finished_callback_ = std::move(playback_finished_callback);
+    playback_prebuffer_bytes_ =
+        static_cast<size_t>(config_.playback_prebuffer_ms) *
+        BOARD_AUDIO_SAMPLE_RATE * sizeof(int16_t) / 1000;
+    ESP_LOGI(TAG, "Playback prebuffer: %d ms (%u bytes)",
+             config_.playback_prebuffer_ms,
+             static_cast<unsigned int>(playback_prebuffer_bytes_));
 
     if (config_.full_duplex) {
         processing_state_.reset(new (std::nothrow) AudioProcessingState());
@@ -319,7 +325,8 @@ void AudioPipeline::begin_playback(uint32_t source_sample_rate)
     playback_started_ = false;
     playback_generation_++;
     playback_active_ = true;
-    last_playback_write_ = xTaskGetTickCount();
+    playback_begin_tick_ = xTaskGetTickCount();
+    last_playback_write_ = playback_begin_tick_;
     ESP_LOGI(TAG, "Playback start: sample_rate=%lu",
              static_cast<unsigned long>(source_sample_rate));
 }
@@ -464,7 +471,8 @@ void AudioPipeline::playback_loop()
         size_t received = 0;
         if (xSemaphoreTake(playback_mutex_, portMAX_DELAY) == pdTRUE) {
             size_t available = xStreamBufferBytesAvailable(playback_buffer_);
-            if (!playback_started_ && !playback_ended_) {
+            if (!playback_started_ && !playback_ended_ &&
+                available < playback_prebuffer_bytes_) {
                 xSemaphoreGive(playback_mutex_);
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
@@ -477,6 +485,11 @@ void AudioPipeline::playback_loop()
             std::memset(mono.data() + received / sizeof(int16_t), 0, block_bytes - received);
         }
         if (received > 0) {
+            if (!playback_started_) {
+                TickType_t waited = xTaskGetTickCount() - playback_begin_tick_;
+                ESP_LOGI(TAG, "First playback block after %lu ms",
+                         static_cast<unsigned long>(waited * 1000 / configTICK_RATE_HZ));
+            }
             playback_started_ = true;
             last_playback_write_ = xTaskGetTickCount();
         }

@@ -22,6 +22,7 @@ struct AudioPipelineConfig {
     float capture_gain = 8.0F;
     bool full_duplex = false;
     int aec_delay_ms = 0;
+    int playback_prebuffer_ms = 500;
 };
 
 struct AudioProcessingState;
@@ -49,7 +50,7 @@ public:
 private:
     static constexpr size_t PLAYBACK_BLOCK_SAMPLES = 480;
     static constexpr size_t UPSTREAM_BUFFER_BYTES = 9600;
-    /* TTS can deliver a reply faster than real time; hold a whole turn. */
+    /* Hold a whole turn so a slow 2.4 GHz link cannot overflow the queue. */
     static constexpr size_t PLAYBACK_BUFFER_BYTES = 1440000;
     static constexpr EventBits_t CAPTURE_STOPPED = 1U << 0;
     static constexpr EventBits_t PLAYBACK_STOPPED = 1U << 1;
@@ -72,6 +73,8 @@ private:
     std::atomic<bool> playback_started_{false};
     std::atomic<uint32_t> playback_sample_rate_{BOARD_AUDIO_SAMPLE_RATE};
     std::atomic<uint32_t> playback_generation_{0};
+    size_t playback_prebuffer_bytes_ = 0;
+    TickType_t playback_begin_tick_ = 0;
     TickType_t last_playback_write_ = 0;
     std::unique_ptr<AudioProcessingState> processing_state_;
 

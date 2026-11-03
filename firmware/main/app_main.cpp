@@ -93,6 +93,7 @@ extern "C" void app_main()
         .capture_gain = config.capture_gain,
         .full_duplex = config.full_duplex,
         .aec_delay_ms = config.aec_delay_ms,
+        .playback_prebuffer_ms = config.playback_prebuffer_ms,
     };
     result = audio.initialize(audio_config, []() { client->playback_finished(); });
     if (result != ESP_OK) {

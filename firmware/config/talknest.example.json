@@ -8,5 +8,6 @@
   "speaker_volume": 65,
   "mic_gain_db": 24.0,
   "capture_gain": 8.0,
-  "aec_delay_ms": 0
+  "aec_delay_ms": 0,
+  "playback_prebuffer_ms": 500
 }

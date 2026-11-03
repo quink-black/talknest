@@ -68,6 +68,10 @@ esp_err_t app_config_load(AppConfig &config)
     if (cJSON_IsNumber(item)) {
         config.aec_delay_ms = item->valueint;
     }
+    item = cJSON_GetObjectItemCaseSensitive(root, "playback_prebuffer_ms");
+    if (cJSON_IsNumber(item)) {
+        config.playback_prebuffer_ms = item->valueint;
+    }
     cJSON_Delete(root);
 
     if (!ok) {
@@ -86,6 +90,10 @@ esp_err_t app_config_load(AppConfig &config)
     }
     if (config.aec_delay_ms < 0 || config.aec_delay_ms > 500) {
         return invalid("aec_delay_ms");
+    }
+    if (config.playback_prebuffer_ms < 200 ||
+        config.playback_prebuffer_ms > 5000) {
+        return invalid("playback_prebuffer_ms");
     }
     if (config.wifi_ssid.size() > 32 || config.wifi_password.size() > 63) {
         return invalid("Wi-Fi credential length");
