@@ -19,4 +19,5 @@ struct AppConfig {
 };
 
 esp_err_t app_config_load(AppConfig &config);
+esp_err_t app_config_load_overrides(AppConfig &config);
 const char *app_config_ca_certificate();

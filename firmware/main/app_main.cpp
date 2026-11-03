@@ -87,6 +87,10 @@ extern "C" void app_main()
         fatal_error("Config invalid", result);
         return;
     }
+    result = app_config_load_overrides(config);
+    if (result != ESP_OK && result != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "SD configuration not applied: %s", esp_err_to_name(result));
+    }
 
     client = std::make_unique<TalkNestClient>(config, audio, ui);
     AudioPipelineConfig audio_config = {
