@@ -45,7 +45,9 @@ bool send_stream(StreamBufferHandle_t stream, SemaphoreHandle_t mutex,
         return false;
     }
     while (xStreamBufferSpacesAvailable(stream) < byte_count) {
-        std::array<uint8_t, TALKNEST_PCM_FRAME_SAMPLES * 2 * sizeof(int16_t)> discarded;
+        /* Small on purpose: this lands on the audio task stacks, which
+         * also carry the large capture and interleaving arrays. */
+        std::array<uint8_t, 512> discarded;
         if (xStreamBufferReceive(stream, discarded.data(), discarded.size(), 0) == 0) {
             break;
         }
@@ -124,8 +126,11 @@ esp_err_t AudioPipeline::start()
     playback_ended_ = false;
     playback_started_ = false;
     running_ = true;
+    /* The capture frame buffers (TDM capture, mono mixdown, stereo
+     * upstream) alone are ~7 KB; 12 KB leaves room for the codec read
+     * path below them. */
     BaseType_t capture_ok = xTaskCreatePinnedToCore(
-        capture_task_entry, "capture", 8192, this, 8, &capture_task_, 1);
+        capture_task_entry, "capture", 12288, this, 8, &capture_task_, 1);
     BaseType_t playback_ok = xTaskCreatePinnedToCore(
         playback_task_entry, "playback", 8192, this, 9, &playback_task_, 1);
     if (capture_ok != pdPASS || playback_ok != pdPASS) {
