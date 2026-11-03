@@ -41,6 +41,10 @@ from .vad import SileroVAD, StreamVAD
 cfg = load()
 app = FastAPI(title="talknest-orchestrator")
 log = logging.getLogger(__name__)
+# uvicorn configures only its own loggers; without a root handler the
+# session-level INFO lines (VAD turns, AEC levels) never reach the log.
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 # Every profile in llm.profiles is a candidate backend; llm.active names the
 # one a turn goes to, and POST /llm moves it without a restart. Clients are
@@ -875,6 +879,8 @@ async def start_turn(ws: WebSocket, sess: Session, pcm24: np.ndarray):
 
 async def cut_off(ws: WebSocket, sess: Session):
     sess.turn_barged = True
+    log.info("Barge-in: cutting off playback (speech_ms=%.0f)",
+             sess.svad.speech_ms)
     await send_json(ws, {"type": "stop_playback", "reason": "barge_in"})
     await cancel_turn(sess)
     await send_json(ws, {"type": "state", "value": "hearing"})
@@ -898,6 +904,8 @@ async def vad_task(ws: WebSocket, sess: Session):
                 # it proves itself by outlasting the barge-in rules.
                 sess.turn_echo = sess.speaking or sess.busy
                 sess.turn_barged = False
+                log.info("VAD speech_start: speaking=%s busy=%s echo_turn=%s",
+                         sess.speaking, sess.busy, sess.turn_echo)
                 # Only when nothing is in flight: overwriting the
                 # thinking/preparing state with "hearing" would tell the
                 # child the answer was given up on while it is still coming.

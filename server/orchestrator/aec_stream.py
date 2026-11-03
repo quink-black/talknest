@@ -14,6 +14,7 @@ configured stateful resamplers keeps that alignment at the canceller's
 """
 
 import asyncio
+import logging
 import queue
 import threading
 
@@ -23,6 +24,8 @@ try:
     import soxr
 except ImportError:  # guarded again in UpstreamAec.start(); keep import safe
     soxr = None
+
+log = logging.getLogger(__name__)
 
 CLIENT_SR = 24000
 # Bound the handoff queue: the AEC thread runs at worst real time, so a
@@ -98,6 +101,12 @@ class UpstreamAec:
                 pass
 
     def _run(self) -> None:
+        # Levels for the periodic diagnostic: what went in on both channels
+        # and what came out, so an echo leak can be told apart from a dead
+        # reference channel.
+        acc = {"mic": 0.0, "ref": 0.0, "out": 0.0}
+        acc_n = 0
+        report_at = threading.Event()
         while self._running:
             try:
                 data = self._in.get(timeout=0.5)
@@ -112,14 +121,27 @@ class UpstreamAec:
             pcm = np.frombuffer(self._leftover[:usable], dtype="<i2")
             self._leftover = self._leftover[usable:]
             frames = pcm.reshape(-1, 2)
+            mic = _pcm_to_float(frames[:, 0])
+            ref = _pcm_to_float(frames[:, 1])
             self._aec.push_reference(
                 self._rs_ref.resample_chunk(_pcm_to_float(frames[:, 1]),
                                             last=False))
             cleaned = self._aec.process(
-                self._rs_mic.resample_chunk(_pcm_to_float(frames[:, 0]),
-                                            last=False))
+                self._rs_mic.resample_chunk(mic, last=False))
             out = self._rs_out.resample_chunk(cleaned.astype(np.float32),
                                               last=False)
+            acc["mic"] += float(np.sum(mic ** 2))
+            acc["ref"] += float(np.sum(ref ** 2))
+            acc["out"] += float(np.sum(out ** 2))
+            acc_n += mic.size
+            if acc_n >= CLIENT_SR * 5:
+                rms = {k: (v / acc_n) ** 0.5 for k, v in acc.items()}
+                db = {k: (20 * np.log10(v) if v > 1e-12 else -120.0)
+                      for k, v in rms.items()}
+                log.info("AEC levels: mic=%.0f dBFS ref=%.0f dBFS out=%.0f dBFS",
+                         db["mic"], db["ref"], db["out"])
+                acc = {k: 0.0 for k in acc}
+                acc_n = 0
             if out.size == 0:
                 continue
             payload = _float_to_pcm(out).tobytes()
