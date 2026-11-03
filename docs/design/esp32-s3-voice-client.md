@@ -1,0 +1,86 @@
+# TalkNest ESP32-S3 语音终端设计
+
+## 背景与已确认资源
+
+目标设备是 Waveshare ESP32-S3-Touch-AMOLED-2.06。开发环境使用 ESP-IDF v6.1，目标芯片为 esp32s3。
+
+硬件为 ESP32-S3R8、8 MB Octal PSRAM、32 MB Flash，带 410×502 CO5300 AMOLED、FT3168 触摸、ES7210 双麦 ADC、ES8311 播放 codec、NS4150B 功放和 AXP2101。音频共用 I2S：MCLK 16、BCLK 41、WS 45、播放数据 40、采集数据 42、PA 46，I2C 为 14/15。官方 factory 固件已有 24 kHz、TX STD stereo、RX TDM 四槽及 ES8311 回采参考，可作为驱动依据。
+
+TalkNest 现有 `/ws` 协议可以直接复用：上行是 24 kHz little-endian int16 mono PCM，连接后发送 `mode`、可选 `learner` 和 `start`；下行包含状态 JSON 与裸 PCM。每轮播放实际排空后必须恰好发送一次 `playback ended`。服务端已有 VAD、连续对话和 barge-in，不需要修改服务端。
+
+## 目标
+
+- 设备启动后自动连接 Wi-Fi 和 WSS，随后自动进入聆听，不要求用户操作屏幕。
+- 用户说话后自动判句并播放回答；支持语音打断，播放中触摸屏幕可作为手动打断后备。
+- PWR 短按进入 light sleep，再按唤醒并恢复连续对话；保留长按约 6 秒硬关机。
+- Wi-Fi、服务器、学习者和模式只来自本地配置文件，屏幕只呈现状态与错误。
+- 仅允许经过 CA 链和主机名校验的 WSS，不提供跳过证书验证的选项。
+- 第一阶段只做状态 UI；通过状态订阅接口为未来 3D 形象保留空间，不开发形象或动画。
+
+## 非目标
+
+- 不增加唤醒词、本地 ASR/LLM/TTS、网页配网或屏幕设置菜单。
+- 不修改 TalkNest 协议、不增加服务端鉴权，不承诺睡眠后恢复原会话。
+- 不加入 OTA、复杂电源轨调参或 3D 资源。
+- 不通过降低服务端 barge-in 阈值来掩盖回声消除问题。
+
+## 软件架构
+
+新工程放在顶层 `firmware/`，使用 C++ 和 ESP-IDF 组件，构建目录固定为 `firmware/build/`。
+
+| 组件 | 职责 |
+| --- | --- |
+| `app_main` | 启动顺序、组件装配、致命错误处理 |
+| `app_config` | 读取构建时嵌入的 JSON 和 CA，校验唯一 WSS 配置来源 |
+| `board` | I2C、音频 codec、I2S、PA、AXP2101 最小初始化 |
+| `audio_pipeline` | TDM 槽位提取、双麦/参考排列、可选 AFE/AEC、PCM 环形缓冲 |
+| `talknest_client` | Wi-Fi、SNTP、WSS、JSON 事件、二进制帧、重连和播放确认 |
+| `power_manager` | PWR 防抖、睡眠准备、GPIO10 唤醒和外设恢复 |
+| `ui_status` | LVGL 状态页、错误页、触摸打断；向未来 UI 暴露统一状态接口 |
+
+I2S 回调只搬运样本。采集/AFE 与播放放在高优先级音频任务，网络和控制任务独立，LVGL 低优先级。DMA、控制队列和实时任务栈使用内部 SRAM；AFE 工作区、显示 framebuffer 和有界网络缓冲使用 PSRAM。上行使用固定 PCM 块，网络阻塞时丢弃最旧音频，避免延迟无限累积。
+
+播放使用 30 秒有界缓冲，并在收到 `audio_end` 后才开始输出；TTS 生成速度可能低于实时，提前播放会造成反复欠载。WebSocket 的二进制帧大于客户端缓冲时会拆成多个事件，必须按 `payload_offset` 重组，不能把每个事件都当作新帧。`stop_playback` 立即清空应用缓冲并停止本轮输出，随后只回一次 `playback ended`；正常 `audio_end` 则等应用缓冲和 I2S 尾时排空再确认。轮次编号使迟到的音频与回调失效，断线会清空上下行旧数据。
+
+## 音频与打断策略
+
+先打通 24 kHz 基础链路：RX 从 TDM 四槽提取 MIC1、ES8311 回采、MIC2，TX 将 mono 复制到左右声道，并直接调用 `esp_codec_dev_read()` 与 `esp_codec_dev_write()` 传输 16 位 PCM。基础链路不做采样率或位宽转换；`audio_start.sample_rate` 不是 24 kHz 时拒绝播放。基础链路在播放期间关闭上行门控，避免助手声音被误识别，但不发送 `stop` 切断回答；播放结束或被打断后，半双工路径会清空上行缓冲，避免把刚播出的回声当作下一句话。
+
+随后接入官方 factory 已使用的 ESP-AFE：24 kHz 采集经有状态的 2:3 抗混叠抽取到 16 kHz，AEC/降噪后再以 3:2 插值回到协议要求的 24 kHz；关闭本地唤醒词和本地 VAD，仍由服务端判句。播放参考保持连续时间线，静音也进入参考流。该路径与现有 Python CLI 的 16 kHz AEC 加双向重采样一致，并且只在 `full_duplex=true` 时初始化，半双工默认路径不加载模型、不做重采样。
+
+只有真机验证“纯助手语音不自我打断、真人插话能可靠停止、停止后第二问完整识别”后，才默认启用全双工语音打断。若参考延迟、槽位或性能未达标，则保留稳定半双工和触摸打断，并明确报告限制，不伪装为已完成。
+
+## 配置与 TLS
+
+唯一机器配置来源是 gitignore 的 `firmware/config/talknest.json`，字段仅包括 Wi-Fi SSID/密码、`wss://host:port/ws`、mode、learner 和必要的音频校准值。`firmware/config/ca.pem` 是信任锚。仓库只提交无秘密的示例文件。
+
+首版通过 `EMBED_FILES` 将 JSON 和 CA 编入固件，修改配置后重新构建烧录，不引入额外文件系统和配网工具。连接前用 SNTP 建立可信时间；证书链错误、主机名/SAN 不匹配和过期证书都必须连接失败并显示原因。README 只指向示例字段，不复制实际配置值。
+
+## UX 与功耗
+
+- 启动：显示连接进度；配置或证书错误时显示可诊断的短消息。
+- 待机：自动聆听，以颜色和小文本区分 listening、hearing、thinking/preparing、speaking、重连。
+- 播放：轻触屏幕发送 `interrupt`；AEC 验收通过后也可直接语音插话。
+- 睡眠：PWR 短按后发送 `stop`，关闭 WSS、音频、PA、屏幕和 Wi-Fi，再以 GPIO10 为唤醒源进入 light sleep。
+- 唤醒：重新初始化外设并建立新 WSS 会话，发送配置和 `start` 后自动聆听；按键释放并防抖后才允许再次睡眠。
+- AXP2101 首版沿用官方默认供电，仅做必要状态读取，不盲目改写电源轨。
+
+## 实施步骤与文件
+
+1. 本文记录架构与验收约束；核心架构变化需要同步更新本文。
+2. 建立 `firmware/CMakeLists.txt`、`sdkconfig.defaults`、`partitions.csv` 和 `main/`，配置 ESP32-S3、32 MB Flash、Octal PSRAM，并锁定官方 BSP、LVGL、WebSocket、ESP-SR 等依赖。
+3. 加入 `components/board` 和 `ui_status`，移植官方 factory 的 24 kHz 音频初始化，验证屏幕、触摸、I2S 采集与播放。
+4. 加入 `app_config` 和 `talknest_client`，实现严格 WSS、事件状态机、重连、实时上行、播放队列和精确播放确认。
+5. 完成基础连续对话，再加入 `power_manager`，验证反复睡眠/唤醒后的资源回收与重连。
+6. 在 `full_duplex=true` 时加入 `audio_pipeline` 的流式重采样和 AFE/AEC，进行参考延迟校准与语音打断验收；不达标时启用明确的半双工降级。
+7. 增加 `firmware/tests/` 的纯逻辑测试和真机测试入口，覆盖槽位映射、增益饱和、缓冲溢出、协议状态迁移及 `playback ended` 唯一性。
+8. 更新 `docs/architecture.md` 的目录说明，并在 `firmware/README.md` 记录构建、配置和测试命令；不提交凭据、CA、build 或依赖缓存。
+
+## 验证
+
+- 纯净构建和主机/设备逻辑测试通过，无新增服务端回归。
+- 错误 CA、错误主机名和过期证书均被拒绝；正确自签 CA 可连接。
+- 真机完成至少 10 轮连续问答，音频无持续卡顿，网络断开后能恢复且不播放旧回答。
+- 连续 20 次 PWR 睡眠/唤醒后可重新对话，无任务、缓冲或 codec 状态泄漏。
+- 语音打断按上述三项场景单独验收；若未通过，最终报告明确半双工限制。
+- 烧录会覆盖设备当前固件，因此需要保留 2.06 官方恢复镜像用于回滚。

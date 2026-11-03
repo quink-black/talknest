@@ -181,6 +181,7 @@ server/orchestrator/   会话编排与语音管线（FastAPI + WebSocket）
 server/services/       各推理服务启动/停止脚本与 TTS sidecar
 web/                   纯 JS 前端（getUserMedia 常驻采集 + 队列播放）
 client/                终端客户端（headless）
+firmware/              ESP32-S3 语音终端（ESP-IDF）
 scripts/               llama.cpp 启动器、tmux/systemd 编排、基准脚本
 tests/                 单元测试 + 服务探针 + 全链路冒烟
 docs/                  设计文档与实测报告

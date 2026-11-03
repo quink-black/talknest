@@ -14,3 +14,11 @@ data/
 ios/Talknest.xcodeproj/
 ios/build/
 .DS_Store
+
+# ESP-IDF build products and device-local credentials
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/config/talknest.json
+firmware/config/ca.pem

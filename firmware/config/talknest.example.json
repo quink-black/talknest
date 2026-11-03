@@ -1,0 +1,12 @@
+{
+  "wifi_ssid": "your-wifi-ssid",
+  "wifi_password": "your-wifi-password",
+  "server_url": "wss://talknest.example.com:8891/ws",
+  "mode": "kid",
+  "learner": "default",
+  "full_duplex": false,
+  "speaker_volume": 65,
+  "mic_gain_db": 24.0,
+  "capture_gain": 8.0,
+  "aec_delay_ms": 0
+}
