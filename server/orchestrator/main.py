@@ -881,6 +881,8 @@ async def cut_off(ws: WebSocket, sess: Session):
     sess.turn_barged = True
     log.info("Barge-in: cutting off playback (speech_ms=%.0f)",
              sess.svad.speech_ms)
+    if sess.aec is not None:
+        sess.aec.dump(f"/tmp/aec-barge-{int(time.time() * 1000)}")
     await send_json(ws, {"type": "stop_playback", "reason": "barge_in"})
     await cancel_turn(sess)
     await send_json(ws, {"type": "state", "value": "hearing"})

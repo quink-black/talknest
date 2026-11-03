@@ -55,6 +55,31 @@ class UpstreamAec:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._out: asyncio.Queue | None = None
         self._rs_mic = self._rs_ref = self._rs_out = None
+        # Rolling diagnostic capture of the last seconds per channel,
+        # dumped by dump() when the server suspects an echo leak.
+        self._dbg: dict[str, list] = {"mic": [], "ref": [], "out": []}
+        self._dbg_n: dict[str, int] = {"mic": 0, "ref": 0, "out": 0}
+
+    def dump(self, path_prefix: str) -> None:
+        """Write the last seconds of mic, reference and cleaned output.
+
+        Diagnostic for echo leaks: the periodic dBFS averages cannot show
+        the short bursts that actually trip the VAD. Best effort from the
+        event loop while the AEC thread keeps writing; the GIL keeps the
+        list surgery from tearing.
+        """
+        import wave
+
+        try:
+            for name, chunks in self._dbg.items():
+                samples = np.concatenate(chunks) if chunks else np.zeros(0, "<i2")
+                with wave.open(f"{path_prefix}_{name}.wav", "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(CLIENT_SR)
+                    wav.writeframes(samples.astype("<i2").tobytes())
+        except Exception as exc:  # a diagnostic must never break a turn
+            log.warning("AEC dump failed: %s", exc)
 
     @property
     def proc_sr(self) -> int:
@@ -134,6 +159,15 @@ class UpstreamAec:
             acc["ref"] += float(np.sum(ref ** 2))
             acc["out"] += float(np.sum(out ** 2))
             acc_n += mic.size
+            for name, chunk in (("mic", frames[:, 0]), ("ref", frames[:, 1])):
+                self._dbg[name].append(chunk.astype("<i2", copy=True))
+                self._dbg_n[name] += chunk.size
+            self._dbg["out"].append(_float_to_pcm(out))
+            self._dbg_n["out"] += out.size
+            for name in self._dbg:
+                while self._dbg_n[name] > CLIENT_SR * 12:
+                    dropped = self._dbg[name].pop(0)
+                    self._dbg_n[name] -= dropped.size
             if acc_n >= CLIENT_SR * 5:
                 rms = {k: (v / acc_n) ** 0.5 for k, v in acc.items()}
                 db = {k: (20 * np.log10(v) if v > 1e-12 else -120.0)
