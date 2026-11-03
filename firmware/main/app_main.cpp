@@ -91,6 +91,9 @@ extern "C" void app_main()
     if (result != ESP_OK && result != ESP_ERR_NOT_FOUND) {
         ESP_LOGW(TAG, "SD configuration not applied: %s", esp_err_to_name(result));
     }
+    ESP_LOGI(TAG, "Effective audio config: volume=%d mic_gain=%.1f capture_gain=%.1f prebuffer=%d",
+             config.speaker_volume, config.mic_gain_db, config.capture_gain,
+             config.playback_prebuffer_ms);
 
     client = std::make_unique<TalkNestClient>(config, audio, ui);
     AudioPipelineConfig audio_config = {
