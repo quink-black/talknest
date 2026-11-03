@@ -60,6 +60,8 @@ private:
     std::function<void()> playback_finished_callback_;
     StreamBufferHandle_t upstream_buffer_ = nullptr;
     StreamBufferHandle_t playback_buffer_ = nullptr;
+    StaticStreamBuffer_t *playback_buffer_struct_ = nullptr;
+    uint8_t *playback_buffer_storage_ = nullptr;
     SemaphoreHandle_t upstream_mutex_ = nullptr;
     SemaphoreHandle_t playback_mutex_ = nullptr;
     EventGroupHandle_t stopped_events_ = nullptr;

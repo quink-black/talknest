@@ -3,7 +3,12 @@
 #include <cstring>
 
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
+#include "esp_lvgl_port.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace {
 constexpr char TAG[] = "ui";
@@ -98,6 +103,39 @@ void UiStatus::set_error(const std::string &message)
 void UiStatus::set_sleeping(bool sleeping)
 {
     bsp_display_brightness_set(sleeping ? 0 : 70);
+}
+
+void UiStatus::suspend()
+{
+    display_locked_ = bsp_display_lock(0);
+    if (!display_locked_) {
+        ESP_LOGW(TAG, "Could not lock display before sleep");
+        return;
+    }
+    if (BSP_LCD_TOUCH_INT >= 0) {
+        gpio_intr_disable(static_cast<gpio_num_t>(BSP_LCD_TOUCH_INT));
+    }
+    lvgl_port_stop();
+}
+
+void UiStatus::resume()
+{
+    i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
+    if (bus != nullptr) {
+        esp_err_t result = i2c_master_bus_reset(bus);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "I2C bus reset failed: %s", esp_err_to_name(result));
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+    if (BSP_LCD_TOUCH_INT >= 0) {
+        gpio_intr_enable(static_cast<gpio_num_t>(BSP_LCD_TOUCH_INT));
+    }
+    lvgl_port_resume();
+    if (display_locked_) {
+        bsp_display_unlock();
+        display_locked_ = false;
+    }
 }
 
 void UiStatus::on_screen_clicked(lv_event_t *event)

@@ -11,7 +11,6 @@
 #include "esp_ae_rate_cvt.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "freertos/idf_additions.h"
 #include "pcm_format.hpp"
 
 namespace {
@@ -187,8 +186,14 @@ esp_err_t AudioPipeline::start()
     }
 
     upstream_buffer_ = xStreamBufferCreate(UPSTREAM_BUFFER_BYTES, 1);
-    playback_buffer_ = xStreamBufferCreateWithCaps(
-        PLAYBACK_BUFFER_BYTES, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    playback_buffer_storage_ = static_cast<uint8_t *>(heap_caps_malloc(
+        PLAYBACK_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    playback_buffer_struct_ = static_cast<StaticStreamBuffer_t *>(heap_caps_calloc(
+        1, sizeof(StaticStreamBuffer_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (playback_buffer_storage_ != nullptr && playback_buffer_struct_ != nullptr) {
+        playback_buffer_ = xStreamBufferCreateStatic(
+            PLAYBACK_BUFFER_BYTES, 1, playback_buffer_storage_, playback_buffer_struct_);
+    }
     upstream_mutex_ = xSemaphoreCreateMutex();
     playback_mutex_ = xSemaphoreCreateMutex();
     stopped_events_ = xEventGroupCreate();
@@ -256,8 +261,16 @@ void AudioPipeline::stop()
         upstream_buffer_ = nullptr;
     }
     if (playback_buffer_ != nullptr) {
-        vStreamBufferDeleteWithCaps(playback_buffer_);
+        vStreamBufferDelete(playback_buffer_);
         playback_buffer_ = nullptr;
+    }
+    if (playback_buffer_storage_ != nullptr) {
+        heap_caps_free(playback_buffer_storage_);
+        playback_buffer_storage_ = nullptr;
+    }
+    if (playback_buffer_struct_ != nullptr) {
+        heap_caps_free(playback_buffer_struct_);
+        playback_buffer_struct_ = nullptr;
     }
     if (stopped_events_ != nullptr) {
         vEventGroupDelete(stopped_events_);

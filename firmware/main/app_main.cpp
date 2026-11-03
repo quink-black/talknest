@@ -35,6 +35,7 @@ void sleep_cycle()
     ui.set_state("Sleeping");
     client->stop();
     audio.stop();
+    ui.suspend();
     ui.set_sleeping(true);
     wait_for_power_button_release();
     ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(1ULL << GPIO_NUM_10,
@@ -46,6 +47,7 @@ void sleep_cycle()
     }
     wait_for_power_button_release();
     ui.set_sleeping(false);
+    ui.resume();
     ESP_LOGI(TAG, "Power button woke the device");
     esp_err_t audio_result = audio.start();
     if (audio_result != ESP_OK) {
