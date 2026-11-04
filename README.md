@@ -236,14 +236,20 @@ macOS 没有 systemd，常驻运行使用 `scripts/start.sh -d`。
 用模拟的孩子进行若干轮对话，检查教学计划是否被执行，并测量计划块带来的
 延迟，运行时 LLM 必须已经启动。
 
-`scripts/hooks/pre-commit` 包含 gitleaks 密钥扫描，启用方法如下，只需执行
-一次：
+`scripts/hooks/pre-commit` 用 gitleaks 扫描暂存内容，一旦发现密钥就阻止
+提交。启用方法如下，只需执行一次：
 
 ```bash
-git config core.hooksPath scripts/hooks
+ln -s ../../scripts/hooks/pre-commit .git/hooks/pre-commit
 ```
 
-若未安装 gitleaks，该 hook 只输出警告，不会阻止提交。
+这个链接只增加 pre-commit 一个 hook。如果 `.git/hooks` 里没有其他工具安装
+的 hook，那么也可以用 `git config core.hooksPath scripts/hooks`，让 git 改
+用仓库里的这个目录；但该设置会让 `.git/hooks` 下已有的 hook 全部失效，所
+以要先确认没有其他工具依赖它们。
+
+若未安装 gitleaks，该 hook 只输出警告，不会阻止提交。扫描规则写在仓库根
+目录的 `.gitleaks.toml`，该文件开头也说明了修改规则之后如何验证。
 
 ## 文档
 

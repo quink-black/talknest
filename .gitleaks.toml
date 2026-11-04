@@ -1,0 +1,81 @@
+# gitleaks configuration for talknest.
+#
+# gitleaks finds this file on its own: the search order is --config,
+# $GITLEAKS_CONFIG, then .gitleaks.toml next to the scan target, so both
+# `gitleaks git .` and the pre-commit hook use it without a -c flag.
+#
+# [extend] keeps upstream's rule set (provider-specific keys, PEM blocks,
+# entropy-gated generic assignments) and this file only adds what upstream
+# cannot know about this project. Test a change with:
+#
+#   gitleaks git .              # whole history
+#   gitleaks git --staged       # what is about to be committed
+#   gitleaks dir .              # every file on disk
+#
+# The allowlist below covers the generated trees of dependencies and build
+# output, which `dir` walks even though .gitignore excludes them. It leaves
+# the files holding real material (local.env, certs/, the device profiles
+# under firmware/config/) alone: `dir` correctly reports the secrets sitting
+# in them, and no scan of tracked content ever sees them. To keep a
+# working-tree scan quiet about your own machine, use gitleaks' baseline
+# instead of weakening this file:
+#
+#   gitleaks dir . -f json -r /tmp/talknest-baseline.json
+#   gitleaks dir . -b /tmp/talknest-baseline.json
+
+title = "talknest gitleaks config"
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+# Upstream's rules catch a provider key shape (sk-, AKIA, ghp_, a PEM
+# header). The two secrets this project actually holds have no such shape: an
+# operator's Bearer key for a LAN LLM backend, and a Wi-Fi passphrase on the
+# firmware side. Both are arbitrary bytes, and upstream's generic-api-key rule
+# also requires entropy 3.5 in the value, so `api_key: "sunflower12"` and
+# `"wifi_password": "sunflower12"` pass it unnoticed while the two rules below
+# report them. Each keys on the name instead of the value.
+
+[[rules]]
+id = "talknest-llm-api-key"
+description = "A literal Bearer key for an LLM backend. Keep it in local.env (git-ignored) and reference it as ${QWEN38_API_KEY} from server/config.yaml."
+# Names: api_key in server/config.yaml, QWEN38_API_KEY / TN9B_API_KEY in the
+# environment, --api-key in scripts. A value starting with $, {, < or [ is a
+# placeholder that has not been expanded, so the first value character is
+# excluded rather than allowlisting the whole line, which would also hide a
+# real key sharing that line.
+#
+# No capturing group: gitleaks reports capture group 1 as the secret when one
+# exists, and the allowlists of the inherited default config then judge that
+# group alone, so a one-character group silently allowed every finding.
+regex = '''(?i)\b[a-z0-9_]{0,24}api[_-]?key\b[ \t]*[=:][ \t]*["']?(?:[^$"'\\\s{}<[])[^"',;\s]{7,}'''
+keywords = ["api_key", "api-key", "apikey"]
+
+[[rules]]
+id = "talknest-wifi-psk"
+description = "A Wi-Fi passphrase in a firmware profile. Copy firmware/config/talknest.example.json to talknest.json, which is git-ignored, and put it there."
+# "" selects an open network on the firmware side (WIFI_AUTH_OPEN), so an
+# empty value is legitimate and one character is not.
+regex = '''"(?:wifi_password|wifi_psk|wifi_passphrase)"[ \t]*:[ \t]*"[^"]{1,128}"'''
+keywords = ["wifi_password", "wifi_psk", "wifi_passphrase"]
+
+[[rules.allowlists]]
+description = "The committed template ships placeholder text."
+paths = ['''(^|/)firmware/config/talknest[^/]*\.example\.json$''']
+
+[allowlist]
+description = "Generated trees that carry no source and no secret."
+# `gitleaks dir` does not read .gitignore, so it walks these: without them a
+# working-tree scan spends most of its time in 130 MB of interpreter, wheels
+# and vendored ESP-IDF components. Kept out of this list on purpose, so that a
+# force-added file still gets scanned: the files an operator writes by hand
+# (local.env, firmware/config/talknest*.json), the TLS material under certs/,
+# the request logs, and the speaker embeddings under data/.
+paths = [
+  '''(^|/)(venv|\.venv|node_modules)/''',
+  '''(^|/)__pycache__/''',
+  '''(^|/)\.pytest_cache/''',
+  '''(^|/)firmware/(build|managed_components)/''',
+  '''(^|/)ios/(build|Talknest\.xcodeproj)/''',
+]
