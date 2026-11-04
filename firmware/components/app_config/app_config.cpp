@@ -7,14 +7,49 @@
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
 #include "cJSON.h"
 #include "esp_log.h"
+#include "profiles_manifest.h"
 
-extern const char talknest_json_start[] asm("_binary_talknest_json_start");
-extern const char talknest_json_end[] asm("_binary_talknest_json_end");
+/* One embedded file per profile slot. CMake stages the selected configs
+ * under these fixed names, so the symbol set never depends on how the
+ * deployment names its environments. */
+#define PROFILE_SYMBOLS(index) \
+    extern const char profile_##index##_start[] asm("_binary_profile_" #index "_json_start"); \
+    extern const char profile_##index##_end[] asm("_binary_profile_" #index "_json_end");
+PROFILE_SYMBOLS(0)
+PROFILE_SYMBOLS(1)
+PROFILE_SYMBOLS(2)
+PROFILE_SYMBOLS(3)
+PROFILE_SYMBOLS(4)
+PROFILE_SYMBOLS(5)
+PROFILE_SYMBOLS(6)
+PROFILE_SYMBOLS(7)
+#undef PROFILE_SYMBOLS
+
 extern const char ca_pem_start[] asm("_binary_ca_pem_start");
 
 namespace {
 constexpr char TAG[] = "config";
 constexpr size_t MAX_SD_CONFIG_BYTES = 8192;
+
+struct EmbeddedProfile {
+    const char *begin;
+    const char *end;
+};
+
+#define PROFILE_ENTRY(index) {profile_##index##_start, profile_##index##_end},
+static_assert(TALKNEST_MAX_PROFILES == 8,
+              "PROFILE_SYMBOLS and PROFILE_ENTRY must cover TALKNEST_MAX_PROFILES slots");
+const EmbeddedProfile embedded_profiles[TALKNEST_MAX_PROFILES] = {
+    PROFILE_ENTRY(0)
+    PROFILE_ENTRY(1)
+    PROFILE_ENTRY(2)
+    PROFILE_ENTRY(3)
+    PROFILE_ENTRY(4)
+    PROFILE_ENTRY(5)
+    PROFILE_ENTRY(6)
+    PROFILE_ENTRY(7)
+};
+#undef PROFILE_ENTRY
 
 bool read_string(cJSON *root, const char *name, std::string &value, bool required)
 {
@@ -108,36 +143,11 @@ struct SdMountGuard {
         }
     }
 };
-} // namespace
 
-esp_err_t app_config_load(AppConfig &config)
+/* Mount, read and unmount are owned by the caller through SdMountGuard;
+ * only the file parsing is shared by the two card passes. */
+esp_err_t read_card_json(cJSON *&root)
 {
-    const size_t length = static_cast<size_t>(talknest_json_end - talknest_json_start);
-    cJSON *root = cJSON_ParseWithLength(talknest_json_start, length);
-    if (root == nullptr) {
-        ESP_LOGE(TAG, "The embedded JSON configuration is malformed");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    bool ok = parse_config(root, config, true);
-    cJSON_Delete(root);
-
-    if (!ok) {
-        return invalid("required strings");
-    }
-    return validate_config(config);
-}
-
-esp_err_t app_config_load_overrides(AppConfig &config)
-{
-    SdMountGuard guard;
-    esp_err_t result = bsp_sdcard_mount();
-    if (result != ESP_OK) {
-        ESP_LOGI(TAG, "No SD card configuration: %s", esp_err_to_name(result));
-        return ESP_ERR_NOT_FOUND;
-    }
-    guard.mounted = true;
-
     const std::string path = std::string(BSP_SD_MOUNT_POINT) + "/talknest.json";
     FILE *file = std::fopen(path.c_str(), "rb");
     if (file == nullptr) {
@@ -162,10 +172,85 @@ esp_err_t app_config_load_overrides(AppConfig &config)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    cJSON *root = cJSON_ParseWithLength(data.data(), data.size());
+    root = cJSON_ParseWithLength(data.data(), data.size());
     if (root == nullptr) {
         ESP_LOGE(TAG, "The SD JSON configuration is malformed");
         return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+} // namespace
+
+esp_err_t app_config_load_profiles(std::vector<AppConfig> &profiles,
+                                   std::vector<std::string> &names)
+{
+    profiles.clear();
+    names.clear();
+    for (size_t i = 0; i < TALKNEST_PROFILE_COUNT; ++i) {
+        const size_t length =
+            static_cast<size_t>(embedded_profiles[i].end - embedded_profiles[i].begin);
+        cJSON *root = cJSON_ParseWithLength(embedded_profiles[i].begin, length);
+        if (root == nullptr) {
+            ESP_LOGE(TAG, "Embedded profile '%s' is malformed",
+                     talknest_profile_names[i]);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        AppConfig config;
+        bool ok = parse_config(root, config, true);
+        cJSON_Delete(root);
+        if (!ok) {
+            ESP_LOGE(TAG, "Embedded profile '%s' is incomplete",
+                     talknest_profile_names[i]);
+            return invalid("required strings");
+        }
+        esp_err_t validation = validate_config(config);
+        if (validation != ESP_OK) {
+            ESP_LOGE(TAG, "Embedded profile '%s' failed validation",
+                     talknest_profile_names[i]);
+            return validation;
+        }
+        profiles.push_back(config);
+        names.push_back(talknest_profile_names[i]);
+    }
+    return ESP_OK;
+}
+
+esp_err_t app_config_load_card_profile(std::string &forced_profile)
+{
+    SdMountGuard guard;
+    if (bsp_sdcard_mount() != ESP_OK) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    guard.mounted = true;
+
+    cJSON *root = nullptr;
+    esp_err_t result = read_card_json(root);
+    if (result != ESP_OK) {
+        return result;
+    }
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "profile");
+    if (cJSON_IsString(item) && item->valuestring != nullptr) {
+        forced_profile = item->valuestring;
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+esp_err_t app_config_load_overrides(AppConfig &config)
+{
+    SdMountGuard guard;
+    esp_err_t result = bsp_sdcard_mount();
+    if (result != ESP_OK) {
+        ESP_LOGI(TAG, "No SD card configuration: %s", esp_err_to_name(result));
+        return ESP_ERR_NOT_FOUND;
+    }
+    guard.mounted = true;
+
+    cJSON *root = nullptr;
+    result = read_card_json(root);
+    if (result != ESP_OK) {
+        return result;
     }
 
     AppConfig candidate = config;
@@ -183,7 +268,7 @@ esp_err_t app_config_load_overrides(AppConfig &config)
     }
 
     config = candidate;
-    ESP_LOGI(TAG, "Applied SD configuration: %s", path.c_str());
+    ESP_LOGI(TAG, "Applied SD configuration");
     return ESP_OK;
 }
 

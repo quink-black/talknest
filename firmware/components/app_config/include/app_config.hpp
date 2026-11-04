@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "esp_err.h"
 
@@ -17,6 +18,13 @@ struct AppConfig {
     int playback_prebuffer_ms = 500;
 };
 
-esp_err_t app_config_load(AppConfig &config);
+/* Parse every embedded environment profile. names[i] is the identifier
+ * derived from the file name (talknest.json -> "default"). */
+esp_err_t app_config_load_profiles(std::vector<AppConfig> &profiles,
+                                   std::vector<std::string> &names);
+/* Read the optional "profile" key from the TF card; an absent card or key
+ * leaves forced_profile untouched. */
+esp_err_t app_config_load_card_profile(std::string &forced_profile);
+/* Overlay the TF card fields onto one already-selected profile. */
 esp_err_t app_config_load_overrides(AppConfig &config);
 const char *app_config_ca_certificate();

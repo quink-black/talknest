@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Generate a self-signed dev certificate (certs/dev.pem + certs/dev.key)
-# with SANs for localhost and this host's LAN IPv4 addresses, then print
-# the TLS run command.
+# with SANs for localhost, this host's mDNS name and LAN IPv4 addresses,
+# then print the TLS run command.
+#
+# Additional DNS names and IPv4 addresses come from the environment (put
+# them in local.env, which is git-ignored), so no deployment-specific host
+# name or address is written into the repository:
+#   TALKNEST_CERT_DNS=host1.local,host2.local
+#   TALKNEST_CERT_IPS=10.0.0.10,10.0.0.11
 #
 # Chrome requires a SubjectAltName covering the visited host; the cert is
 # untrusted (self-signed), so the browser will show a one-click warning.
@@ -9,6 +15,10 @@
 # store (macOS: Keychain Access -> System -> trust for SSL).
 set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# Load the git-ignored machine settings, as the service scripts do. Without
+# this, the two variables documented in local.env.example would only work
+# when exported by hand on the command line.
+. "$REPO_ROOT/scripts/local_env.sh"
 CERT_DIR="$REPO_ROOT/certs"
 mkdir -p "$CERT_DIR"
 
@@ -20,8 +30,31 @@ if [ "$(uname -s)" = "Darwin" ]; then
 else
     IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -n 4)
 fi
-SAN="DNS:localhost,IP:127.0.0.1"
+SHORT_HOST="$(hostname -s 2>/dev/null || hostname)"
+EXTRA_DNS="${TALKNEST_CERT_DNS:-}"
+EXTRA_IPS="${TALKNEST_CERT_IPS:-}"
+SAN="DNS:localhost,DNS:${SHORT_HOST}.local,IP:127.0.0.1"
+# Comma-separated extras; validate so a stray value cannot inject an
+# openssl extension or produce an invalid SAN.
+for name in ${EXTRA_DNS//,/ }; do
+    name="$(printf '%s' "$name" | tr -d '[:space:]')"
+    if [ -z "$name" ]; then continue; fi
+    if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+        echo "[gen_dev_cert] invalid DNS name in TALKNEST_CERT_DNS: $name" >&2
+        exit 1
+    fi
+    SAN="$SAN,DNS:$name"
+done
 for ip in $IPS; do
+    SAN="$SAN,IP:$ip"
+done
+for ip in ${EXTRA_IPS//,/ }; do
+    ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
+    if [ -z "$ip" ]; then continue; fi
+    if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "[gen_dev_cert] invalid IP in TALKNEST_CERT_IPS: $ip" >&2
+        exit 1
+    fi
     SAN="$SAN,IP:$ip"
 done
 

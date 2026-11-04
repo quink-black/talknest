@@ -52,9 +52,9 @@ I2S 回调只搬运样本。采集/AFE 与播放放在高优先级音频任务�
 
 ## 配置与 TLS
 
-唯一机器配置来源是 gitignore 的 `firmware/config/talknest.json`，字段仅包括 Wi-Fi SSID/密码、`wss://host:port/ws`、mode、learner 和必要的音频校准值。`firmware/config/ca.pem` 是信任锚。仓库只提交无秘密的示例文件。
+唯一机器配置来源是 gitignore 的 `firmware/config/talknest*.json`（可包含多份环境配置，开机按可见 SSID 选择），字段仅包括 Wi-Fi SSID/密码、`wss://host:port/ws`、mode、learner 和必要的音频校准值，其中主机名可以是 `.local` 结尾的 mDNS 名称。`firmware/config/ca.pem` 是信任锚。仓库只提交无秘密的示例文件。
 
-首版通过 `EMBED_FILES` 将 JSON 和 CA 编入固件，修改配置后重新构建烧录，不引入额外文件系统和配网工具。连接前用 SNTP 建立可信时间；证书链错误、主机名/SAN 不匹配和过期证书都必须连接失败并显示原因。README 只指向示例字段，不复制实际配置值。
+首版通过 `EMBED_FILES` 将 JSON 和 CA 编入固件，修改嵌入配置后需要重新构建烧录；但多份环境配置可以一次烧录，由设备在开机时按可见 SSID 选择，移动场所时无需重烧。不引入额外文件系统和配网工具。连接前用 SNTP 建立可信时间；证书链错误、主机名/SAN 不匹配和过期证书都必须连接失败并显示原因。README 只指向示例字段，不复制实际配置值。
 
 ## UX 与功耗
 

@@ -1,6 +1,7 @@
 #include "talknest_client.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <ctime>
 
@@ -9,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "esp_wifi.h"
+#include "profile_match.hpp"
 
 namespace {
 constexpr char TAG[] = "talknest";
@@ -48,21 +50,148 @@ esp_err_t TalkNestClient::initialize()
     return ESP_OK;
 }
 
+esp_err_t TalkNestClient::select_profile(const std::vector<AppConfig> &profiles,
+                                         const std::vector<std::string> &names,
+                                         const std::string &forced, size_t &selected)
+{
+    if (profiles.empty() || names.size() != profiles.size()) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    selected = 0;
+    profiles_ = profiles;
+    profile_names_ = names;
+    for (size_t i = 0; i < names.size(); ++i) {
+        ESP_LOGI(TAG, "Candidate profile %u: '%s'%s", static_cast<unsigned>(i),
+                 names[i].c_str(), i == 0 ? " (default fallback)" : "");
+    }
+
+    if (!forced.empty()) {
+        auto found = std::find(names.begin(), names.end(), forced);
+        if (found != names.end()) {
+            selected = static_cast<size_t>(found - names.begin());
+            config_ = profiles[selected];
+            profile_index_ = selected;
+            ESP_LOGI(TAG, "Profile '%s' selected from SD card", forced.c_str());
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "SD card names an unknown profile; scanning instead");
+    }
+
+    /* A scan needs Wi-Fi started but not connected. The chosen profile is
+     * applied to config_ here; start() then only sets credentials. */
+    esp_err_t result = esp_wifi_start();
+    if (result == ESP_OK) {
+        wifi_started_ = true;
+        wifi_scan_config_t scan_config = {};
+        scan_config.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+        scan_config.show_hidden = false;
+        result = esp_wifi_scan_start(&scan_config, true);
+    }
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi scan unavailable: %s; using the default profile",
+                 esp_err_to_name(result));
+        config_ = profiles[selected];
+        profile_index_ = selected;
+        return ESP_OK;
+    }
+
+    uint16_t ap_count = 0;
+    result = esp_wifi_scan_get_ap_num(&ap_count);
+    std::vector<wifi_ap_record_t> aps(ap_count);
+    uint16_t fetched = ap_count;
+    if (result == ESP_OK && fetched > 0) {
+        result = esp_wifi_scan_get_ap_records(&fetched, aps.data());
+    }
+    if (result != ESP_OK || fetched == 0) {
+        ESP_LOGW(TAG, "No scan results; using the default profile");
+        config_ = profiles[selected];
+        profile_index_ = selected;
+        return ESP_OK;
+    }
+
+    int best_rssi = INT_MIN;
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        for (uint16_t a = 0; a < fetched; ++a) {
+            if (profile_match::ssid_equals(aps[a].ssid, sizeof(aps[a].ssid),
+                                           profiles[i].wifi_ssid) &&
+                aps[a].rssi > best_rssi) {
+                best_rssi = aps[a].rssi;
+                selected = i;
+            }
+        }
+    }
+    if (best_rssi == INT_MIN) {
+        ESP_LOGW(TAG, "No profile SSID is visible; using the default profile");
+    } else {
+        ESP_LOGI(TAG, "Profile '%s' selected by visible SSID (RSSI %d)",
+                 names[selected].c_str(), best_rssi);
+    }
+    config_ = profiles[selected];
+    profile_index_ = selected;
+    return ESP_OK;
+}
+
+void TalkNestClient::configure_station(wifi_config_t &station, const AppConfig &config)
+{
+    station = {};
+    std::strncpy(reinterpret_cast<char *>(station.sta.ssid), config.wifi_ssid.c_str(),
+                 sizeof(station.sta.ssid) - 1);
+    std::strncpy(reinterpret_cast<char *>(station.sta.password), config.wifi_password.c_str(),
+                 sizeof(station.sta.password) - 1);
+    station.sta.threshold.authmode = config.wifi_password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+    station.sta.pmf_cfg.capable = true;
+    station.sta.pmf_cfg.required = false;
+}
+
+/* A Wi-Fi timeout means the selected environment may be wrong (for
+ * example the device moved between networks without rebooting). Rotate
+ * through the embedded profiles instead of retrying the same credentials
+ * forever; no rescan is needed, so the connection state machine stays
+ * unchanged. */
+void TalkNestClient::retry_next_profile()
+{
+    if (profiles_.size() < 2) {
+        return;
+    }
+    const size_t next_index = (profile_index_ + 1) % profiles_.size();
+    const AppConfig &next = profiles_[next_index];
+
+    /* set_config fails while the driver is still connecting, so stop it
+     * first and only switch config_ once the new credentials are applied. */
+    wifi_config_t station;
+    configure_station(station, next);
+    esp_wifi_disconnect();
+    esp_err_t result = esp_wifi_set_config(WIFI_IF_STA, &station);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Could not switch Wi-Fi profile: %s", esp_err_to_name(result));
+        return;
+    }
+
+    /* Keep the effective configuration intact: TF card overlays, the audio
+     * settings and full_duplex were used to initialize the running audio
+     * pipeline, whose upstream channel count cannot change at runtime.
+     * Only the network identity changes with the environment. */
+    profile_index_ = next_index;
+    config_.wifi_ssid = next.wifi_ssid;
+    config_.wifi_password = next.wifi_password;
+    config_.server_url = next.server_url;
+    ESP_LOGW(TAG, "Wi-Fi timeout; trying profile '%s'",
+             profile_names_[profile_index_].c_str());
+    esp_wifi_connect();
+}
+
 esp_err_t TalkNestClient::start()
 {
     if (!initialized_ || running_) {
         return running_ ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
-    wifi_config_t station = {};
-    std::strncpy(reinterpret_cast<char *>(station.sta.ssid), config_.wifi_ssid.c_str(),
-                 sizeof(station.sta.ssid) - 1);
-    std::strncpy(reinterpret_cast<char *>(station.sta.password), config_.wifi_password.c_str(),
-                 sizeof(station.sta.password) - 1);
-    station.sta.threshold.authmode = config_.wifi_password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
-    station.sta.pmf_cfg.capable = true;
-    station.sta.pmf_cfg.required = false;
+    wifi_config_t station;
+    configure_station(station, config_);
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &station), TAG, "Configure Wi-Fi failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Start Wi-Fi failed");
+    if (!wifi_started_) {
+        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Start Wi-Fi failed");
+        wifi_started_ = true;
+    }
     ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "Start Wi-Fi connection failed");
 
     running_ = true;
@@ -107,6 +236,7 @@ void TalkNestClient::stop()
     audio_.cancel_playback();
     audio_.clear_upstream();
     esp_wifi_stop();
+    wifi_started_ = false;
     xEventGroupClearBits(events_, WIFI_CONNECTED);
 }
 
@@ -120,6 +250,7 @@ void TalkNestClient::manager_loop()
         }
         if ((bits & WIFI_CONNECTED) == 0) {
             ui_.set_error("Wi-Fi timeout");
+            retry_next_profile();
             continue;
         }
 

@@ -1,4 +1,6 @@
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "app_config.hpp"
 #include "audio_pipeline.hpp"
@@ -82,20 +84,40 @@ extern "C" void app_main()
         fatal_error("Display init failed", result);
         return;
     }
-    result = app_config_load(config);
+    std::vector<AppConfig> profiles;
+    std::vector<std::string> profile_names;
+    std::string forced_profile;
+    size_t selected = 0;
+    result = app_config_load_profiles(profiles, profile_names);
     if (result != ESP_OK) {
         fatal_error("Config invalid", result);
         return;
     }
+    result = app_config_load_card_profile(forced_profile);
+    if (result != ESP_OK && result != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "SD profile selection not applied: %s", esp_err_to_name(result));
+    }
+
+    client = std::make_unique<TalkNestClient>(config, audio, ui);
+    result = client->initialize();
+    if (result != ESP_OK) {
+        fatal_error("Network init failed", result);
+        return;
+    }
+    result = client->select_profile(profiles, profile_names, forced_profile, selected);
+    if (result != ESP_OK) {
+        fatal_error("Profile select failed", result);
+        return;
+    }
+    config = profiles[selected];
     result = app_config_load_overrides(config);
     if (result != ESP_OK && result != ESP_ERR_NOT_FOUND) {
         ESP_LOGW(TAG, "SD configuration not applied: %s", esp_err_to_name(result));
     }
+    client->set_profile(config);
     ESP_LOGI(TAG, "Effective audio config: volume=%d mic_gain=%.1f capture_gain=%.1f prebuffer=%d",
              config.speaker_volume, config.mic_gain_db, config.capture_gain,
              config.playback_prebuffer_ms);
-
-    client = std::make_unique<TalkNestClient>(config, audio, ui);
     AudioPipelineConfig audio_config = {
         .speaker_volume = config.speaker_volume,
         .mic_gain_db = config.mic_gain_db,
@@ -111,12 +133,6 @@ extern "C" void app_main()
     result = audio.start();
     if (result != ESP_OK) {
         fatal_error("Audio start failed", result);
-        audio.stop();
-        return;
-    }
-    result = client->initialize();
-    if (result != ESP_OK) {
-        fatal_error("Network init failed", result);
         audio.stop();
         return;
     }

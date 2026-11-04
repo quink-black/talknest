@@ -9,6 +9,7 @@
 #include "esp_err.h"
 #include "esp_netif.h"
 #include "esp_websocket_client.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
@@ -20,6 +21,13 @@ public:
     TalkNestClient(const AppConfig &config, AudioPipeline &audio, UiStatus &ui);
 
     esp_err_t initialize();
+    /* Pick the environment profile by scanning visible APs. A profile
+     * named on the TF card is used without scanning. config_ and
+     * 'selected' are updated with the choice; Wi-Fi is left started. */
+    esp_err_t select_profile(const std::vector<AppConfig> &profiles,
+                             const std::vector<std::string> &names,
+                             const std::string &forced, size_t &selected);
+    void set_profile(const AppConfig &config) { config_ = config; }
     esp_err_t start();
     void stop();
     void interrupt();
@@ -43,12 +51,20 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
     std::atomic<bool> initial_messages_pending_{false};
+    bool wifi_started_ = false;
+    /* Kept so a Wi-Fi timeout can try the next environment without a
+     * reflash. profiles_[0] is always the default profile. */
+    std::vector<AppConfig> profiles_;
+    std::vector<std::string> profile_names_;
+    size_t profile_index_ = 0;
     std::string text_message_;
     std::vector<uint8_t> binary_message_;
     uint8_t message_opcode_ = 0;
 
     void manager_loop();
     void sender_loop();
+    void configure_station(wifi_config_t &station, const AppConfig &config);
+    void retry_next_profile();
     void send_initial_messages();
     void send_start();
     void send_json(const char *type, const char *value = nullptr);
