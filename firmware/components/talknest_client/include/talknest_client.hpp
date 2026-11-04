@@ -14,11 +14,11 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "ui_status.hpp"
+#include "ui_avatar.hpp"
 
 class TalkNestClient {
 public:
-    TalkNestClient(const AppConfig &config, AudioPipeline &audio, UiStatus &ui);
+    TalkNestClient(const AppConfig &config, AudioPipeline &audio, UiAvatar &ui);
 
     esp_err_t initialize();
     /* Pick the environment profile by scanning visible APs. A profile
@@ -40,7 +40,7 @@ private:
 
     AppConfig config_;
     AudioPipeline &audio_;
-    UiStatus &ui_;
+    UiAvatar &ui_;
     esp_netif_t *netif_ = nullptr;
     EventGroupHandle_t events_ = nullptr;
     SemaphoreHandle_t send_mutex_ = nullptr;
@@ -51,6 +51,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
     std::atomic<bool> initial_messages_pending_{false};
+    std::atomic<bool> playback_ended_pending_{false};
     bool wifi_started_ = false;
     /* Kept so a Wi-Fi timeout can try the next environment without a
      * reflash. profiles_[0] is always the default profile. */

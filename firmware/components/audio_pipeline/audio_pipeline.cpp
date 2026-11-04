@@ -69,10 +69,12 @@ AudioPipeline::~AudioPipeline()
 }
 
 esp_err_t AudioPipeline::initialize(const AudioPipelineConfig &config,
-                                    std::function<void()> playback_finished_callback)
+                                    std::function<void()> playback_finished_callback,
+                                    std::function<void(uint8_t)> playback_level_callback)
 {
     config_ = config;
     playback_finished_callback_ = std::move(playback_finished_callback);
+    playback_level_callback_ = std::move(playback_level_callback);
     upstream_channels_ = config_.full_duplex ? 2 : 1;
     playback_prebuffer_bytes_ =
         static_cast<size_t>(config_.playback_prebuffer_ms) *
@@ -359,6 +361,38 @@ void AudioPipeline::playback_loop()
             }
             playback_started_ = true;
             last_playback_write_ = xTaskGetTickCount();
+        }
+        if (playback_level_callback_) {
+            // Only real samples count: the zero padding above is silence.
+            const size_t samples = received / sizeof(int16_t);
+            uint64_t sum = 0;
+            for (size_t i = 0; i < samples; ++i) {
+                const int32_t v = mono[i];
+                sum += static_cast<uint64_t>(v * v);
+            }
+            const uint32_t mean = samples > 0 ?
+                static_cast<uint32_t>(sum / samples) : 0;
+            // Integer sqrt of the mean square, then scale full scale to 255.
+            uint32_t value = mean;
+            uint32_t root = 0;
+            uint32_t bit = 1u << 30;
+            while (bit > value) {
+                bit >>= 2;
+            }
+            while (bit != 0) {
+                if (value >= root + bit) {
+                    value -= root + bit;
+                    root = (root >> 1) + bit;
+                } else {
+                    root >>= 1;
+                }
+                bit >>= 2;
+            }
+            uint32_t rms = root * 255u / 32768u;
+            if (rms > 255) {
+                rms = 255;
+            }
+            playback_level_callback_(static_cast<uint8_t>(rms));
         }
         pcm_format::mono_to_stereo(mono.data(), stereo.data(), mono.size());
         esp_err_t result = board_audio_write(stereo.data(), mono.size());

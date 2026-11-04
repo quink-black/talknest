@@ -31,7 +31,8 @@ public:
     ~AudioPipeline();
 
     esp_err_t initialize(const AudioPipelineConfig &config,
-                         std::function<void()> playback_finished_callback);
+                         std::function<void()> playback_finished_callback,
+                         std::function<void(uint8_t)> playback_level_callback = {});
     esp_err_t start();
     void stop();
 
@@ -56,6 +57,9 @@ private:
 
     AudioPipelineConfig config_;
     std::function<void()> playback_finished_callback_;
+    /* Called from the playback task with the RMS of each 20 ms block.
+     * The callee must only do an atomic store, never touch LVGL. */
+    std::function<void(uint8_t)> playback_level_callback_;
     size_t upstream_channels_ = 1;
     StreamBufferHandle_t upstream_buffer_ = nullptr;
     StreamBufferHandle_t playback_buffer_ = nullptr;

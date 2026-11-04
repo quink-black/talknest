@@ -1,6 +1,18 @@
 # TalkNest ESP32-S3 语音终端
 
-这个 ESP-IDF 工程适配 Waveshare ESP32-S3-Touch-AMOLED-2.06。设备连接 TalkNest 后会自动聆听，并由服务端的 VAD 判定每句话何时结束。播放回答时，轻触屏幕可以打断回答；PWR 短按进入浅睡眠，再按一次可以唤醒设备。长按 PWR 仍由 AXP2101 执行硬关机。
+这个 ESP-IDF 工程适配 Waveshare ESP32-S3-Touch-AMOLED-2.06。设备连接 TalkNest 后会自动聆听，并由服务端的 VAD 判定每句话何时结束。屏幕的常驻主角是一个对话驱动的互动形象，随对话状态、播放音频与当前句子连续变化；播放回答时轻触屏幕可以打断回答，PWR 短按进入浅睡眠，再按一次可以唤醒设备。长按 PWR 仍由 AXP2101 执行硬关机。
+
+### 形象素材
+
+`ui_avatar` 使用四帧表情位图（睁/闭眼 × 闭/张嘴），由 `scripts/gen_avatar_frames.py` 从 `web/whale_front.webp` 离线生成，输出 `components/ui_avatar/assets/avatar_frames.bin`，构建时通过 `EMBED_FILES` 编入固件。修改形象或表情后，用装有 Pillow 与 numpy 的 Python 环境重新生成并构建：
+
+```bash
+python scripts/gen_avatar_frames.py --preview /tmp/avatar.png
+```
+
+素材来源是社区自发的鲸鱼娘二创形象，不是任何商业标志。屏幕不显示网络、连接或配置细节，这类信息只写串口日志。
+
+形象随对话状态（聆听、思考、说话、抢麦）、播放音频包络与闲置节奏连续变化：四帧表情、呼吸缩放、侧头、说话弹跳、随机眨眼、状态光晕与思考提示。回复正文是中文，而固件当前只有 `montserrat` 字体、没有中文字形，因此**句子文本暂不上屏**；错误等 ASCII 短消息可短暂显示在底部。完整的文字/单词层需要 CJK 字体与服务端结构化文本，属于后续阶段。
 
 ## 配置
 
@@ -90,7 +102,7 @@ idf.py build
 
 ## 测试
 
-主机测试使用系统 C++ 编译器检查 TDM 槽位混音、单声道到立体声的转换，以及环境配置的 SSID 精确匹配：
+主机测试使用系统 C++ 编译器检查 TDM 槽位混音、单声道到立体声的转换、环境配置的 SSID 精确匹配，以及互动形象的状态/包络/选帧映射、句子队列与 UTF-8 截断：
 
 ```bash
 tests/run_host_tests.sh

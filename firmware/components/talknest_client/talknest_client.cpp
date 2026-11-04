@@ -18,7 +18,7 @@ constexpr uint32_t WIFI_WAIT_MS = 20000;
 constexpr uint32_t TIME_WAIT_MS = 15000;
 }
 
-TalkNestClient::TalkNestClient(const AppConfig &config, AudioPipeline &audio, UiStatus &ui)
+TalkNestClient::TalkNestClient(const AppConfig &config, AudioPipeline &audio, UiAvatar &ui)
     : config_(config), audio_(audio), ui_(ui)
 {
 }
@@ -218,6 +218,7 @@ void TalkNestClient::stop()
     running_ = false;
     connected_ = false;
     initial_messages_pending_ = false;
+    playback_ended_pending_ = false;
     xEventGroupSetBits(events_, WIFI_CONNECTED);
     esp_wifi_disconnect();
     EventBits_t expected_stops = 0;
@@ -320,6 +321,9 @@ void TalkNestClient::sender_loop()
     while (running_) {
         if (initial_messages_pending_.exchange(false) && connected_) {
             send_initial_messages();
+        }
+        if (playback_ended_pending_.exchange(false) && connected_) {
+            send_json("playback", "ended");
         }
         if (xTaskGetTickCount() - last_ping >= pdMS_TO_TICKS(15000)) {
             send_json("ping");
@@ -428,7 +432,10 @@ void TalkNestClient::interrupt()
 
 void TalkNestClient::playback_finished()
 {
-    send_json("playback", "ended");
+    // Called from the playback task (prio 9). Only set a flag; the sender
+    // task does the network send so the audio task never blocks on a lock.
+    ui_.on_audio_end();
+    playback_ended_pending_.store(true, std::memory_order_relaxed);
 }
 
 void TalkNestClient::handle_text(const char *data, size_t length)
@@ -449,12 +456,14 @@ void TalkNestClient::handle_text(const char *data, size_t length)
         const cJSON *rate = cJSON_GetObjectItemCaseSensitive(root, "sample_rate");
         uint32_t sample_rate = cJSON_IsNumber(rate) ? static_cast<uint32_t>(rate->valueint) : 24000;
         audio_.begin_playback(sample_rate);
+        ui_.on_audio_start();
     } else if (std::strcmp(type, "audio_end") == 0) {
         audio_.end_playback();
     } else if (std::strcmp(type, "stop_playback") == 0) {
         if (audio_.cancel_playback()) {
             send_json("playback", "ended");
         }
+        ui_.on_audio_end();
     } else if (std::strcmp(type, "error") == 0 || std::strcmp(type, "tts_error") == 0) {
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(root, "message");
         ui_.set_error(cJSON_IsString(message) ? message->valuestring : "Server error");

@@ -11,13 +11,13 @@
 #include "nvs_flash.h"
 #include "power_manager.hpp"
 #include "talknest_client.hpp"
-#include "ui_status.hpp"
+#include "ui_avatar.hpp"
 
 namespace {
 constexpr char TAG[] = "main";
 
 AppConfig config;
-UiStatus ui;
+UiAvatar ui;
 AudioPipeline audio;
 PowerManager power;
 std::unique_ptr<TalkNestClient> client;
@@ -125,7 +125,12 @@ extern "C" void app_main()
         .full_duplex = config.full_duplex,
         .playback_prebuffer_ms = config.playback_prebuffer_ms,
     };
-    result = audio.initialize(audio_config, []() { client->playback_finished(); });
+    /* The playback task only writes an atomic envelope value here; the
+     * avatar's LVGL timer reads it. No LVGL call from the audio task. */
+    result = audio.initialize(
+        audio_config,
+        []() { client->playback_finished(); },
+        [](uint8_t rms) { ui.set_envelope(rms); });
     if (result != ESP_OK) {
         fatal_error("Audio init failed", result);
         return;
