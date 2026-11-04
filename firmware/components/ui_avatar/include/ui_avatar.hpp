@@ -11,7 +11,7 @@
 
 /* Dialogue-driven avatar. The character is the only permanent element on
  * the screen. Connection and configuration diagnostics stay in the serial
- * log; a short error message may briefly overlay the bottom line.
+ * log; a short error message briefly overlays the screen when needed.
  *
  * Threading contract: every method except initialize()/suspend()/resume()
  * may be called from any task and only touches atomics. The LVGL timer
@@ -36,14 +36,12 @@ public:
 
 private:
     static constexpr size_t TEXT_SIZE = 96;
-    /* If no fresh envelope has arrived for this many 30 ms ticks, the
-     * mouth closes. This recovers every path that stops playback without
-     * a normal playback_finished (cancel, disconnect, sleep). */
-    static constexpr uint32_t ENVELOPE_TIMEOUT_TICKS = 5;
+    /* If no fresh envelope has arrived within this wall-clock window, the
+     * mouth closes. This recovers every path that stops playback without a
+     * normal playback_finished (cancel, disconnect, sleep). */
 
     std::function<void()> interrupt_callback_;
     lv_obj_t *image_ = nullptr;
-    lv_obj_t *halo_ = nullptr;
     lv_obj_t *message_label_ = nullptr;
     lv_obj_t *thought_ = nullptr;
     lv_obj_t *touch_layer_ = nullptr;
@@ -58,14 +56,14 @@ private:
     char error_text_[TEXT_SIZE] = {};
     std::atomic<bool> error_pending_{false};
 
-    // LVGL-task-only state.
-    uint32_t tick_ = 0;
-    uint32_t blink_at_ = 60;
-    uint32_t tap_until_ = 0;
-    uint32_t hearing_until_ = 0;
-    uint32_t message_until_ = 0;
+    // LVGL-task-only state. All deadlines are lv_tick_get() milliseconds.
+    uint32_t now_ms_ = 0;
+    uint32_t blink_at_ms_ = 0;
+    uint32_t tap_until_ms_ = 0;
+    uint32_t hearing_until_ms_ = 0;
+    uint32_t message_until_ms_ = 0;
+    uint32_t last_envelope_ms_ = 0;
     uint32_t last_envelope_seq_ = 0;
-    uint32_t silent_ticks_ = 0;
     int current_frame_ = -1;
     bool can_interrupt_ = false;
     bool display_locked_ = false;

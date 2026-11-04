@@ -31,17 +31,20 @@ int main()
     assert(select_frame({State::Speaking, 24, false, true}) == AVATAR_FRAME_TALK);
 
     // Every state produces a distinct, non-frozen pose; breathing varies
-    // across ticks so the character is never static.
+    // with wall-clock time so the character is never static.
     Pose a = compute_pose({State::Listening, 0, 0});
-    Pose b = compute_pose({State::Listening, 0, 20});
+    Pose b = compute_pose({State::Listening, 0, 600});
     assert(a.scale_y != b.scale_y);
     assert(compute_pose({State::Thinking, 0, 0}).translate_x == 4);
     assert(compute_pose({State::Hearing, 0, 0}).translate_y < 0);
     assert(compute_pose({State::Speaking, 200, 0}).scale_y >
            compute_pose({State::Speaking, 0, 0}).scale_y);
     assert(compute_pose({State::Speaking, 200, 0}).translate_y < 0);
-    for (uint32_t t = 0; t < 200; ++t) {
-        Pose p = compute_pose({State::Idle, 0, t});
+    // Breathing repeats on a 2400 ms period regardless of frame rate.
+    assert(compute_pose({State::Idle, 0, 100}).scale_y ==
+           compute_pose({State::Idle, 0, 2500}).scale_y);
+    for (uint32_t ms = 0; ms < 4800; ms += 37) {
+        Pose p = compute_pose({State::Idle, 0, ms});
         assert(p.scale_y >= 256 && p.scale_y <= 280);
     }
 

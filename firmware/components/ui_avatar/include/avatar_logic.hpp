@@ -41,7 +41,7 @@ struct Pose {
 struct PoseInput {
     State state;
     uint8_t envelope;
-    uint32_t tick;         // monotonically increasing 30 ms ticks
+    uint32_t elapsed_ms;   // wall-clock time, not animation frames
 };
 
 Pose compute_pose(const PoseInput &in);
