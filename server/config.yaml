@@ -113,6 +113,9 @@ vad:
 aec:
   enabled: true
   # model_prefix: /path/to/dtln_aec_128   # default: dtln-aec/ in the checkout
+  # Barge-in wav dumps are a diagnostic: off by default, bounded when on.
+  # dump_on_barge_in: true
+  # dump_max_wavs: 9                     # three streams per barge-in
 
 # Who is talking: child, dad or mom, told apart by voiceprint. Each family
 # member enrolls a few clips from the page; matching starts once the child

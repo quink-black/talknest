@@ -14,6 +14,7 @@ configured stateful resamplers keeps that alignment at the canceller's
 """
 
 import asyncio
+import contextlib
 import logging
 import queue
 import threading
@@ -65,26 +66,64 @@ class UpstreamAec:
         self._dbg: dict[str, list] = {"mic": [], "ref": [], "out": []}
         self._dbg_n: dict[str, int] = {"mic": 0, "ref": 0, "out": 0}
 
-    def dump(self, path_prefix: str) -> None:
+    def dump(self, path_prefix: str, max_wavs: int = 9,
+             rotate_prefix: str = "aec-barge-") -> None:
         """Write the last seconds of mic, reference and cleaned output.
 
         Diagnostic for echo leaks: the periodic dBFS averages cannot show
         the short bursts that actually trip the VAD. Best effort from the
         event loop while the AEC thread keeps writing; the GIL keeps the
         list surgery from tearing.
+
+        Files are created exclusively (no symlink following) and the dump
+        directory is rotated so a long session cannot fill it.
         """
+        import os
         import wave
 
+        directory = os.path.dirname(path_prefix) or "."
         try:
             for name, chunks in self._dbg.items():
                 samples = np.concatenate(chunks) if chunks else np.zeros(0, "<i2")
-                with wave.open(f"{path_prefix}_{name}.wav", "wb") as wav:
-                    wav.setnchannels(1)
-                    wav.setsampwidth(2)
-                    wav.setframerate(CLIENT_SR)
-                    wav.writeframes(samples.astype("<i2").tobytes())
+                path = f"{path_prefix}_{name}.wav"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(path, flags, 0o600)
+                with os.fdopen(fd, "wb") as raw:
+                    with wave.open(raw, "wb") as wav:
+                        wav.setnchannels(1)
+                        wav.setsampwidth(2)
+                        wav.setframerate(CLIENT_SR)
+                        wav.writeframes(samples.astype("<i2").tobytes())
+            # Rotation must run even when a write failed: a leftover
+            # dangling symlink must not let the directory grow forever.
+            self._rotate_dumps(directory, rotate_prefix, max_wavs)
         except Exception as exc:  # a diagnostic must never break a turn
             log.warning("AEC dump failed: %s", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                self._rotate_dumps(directory, rotate_prefix, max_wavs)
+
+    @staticmethod
+    def _rotate_dumps(directory: str, prefix: str, max_wavs: int) -> None:
+        """Keep only the newest `max_wavs` barge-in wavs in the directory."""
+        import os
+
+        entries = []
+        for name in os.listdir(directory):
+            if not (name.startswith(prefix) and name.endswith(".wav")):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:  # dangling symlink or a concurrent removal
+                mtime = -1.0  # treat as oldest, so it is cleaned up first
+            entries.append((mtime, path))
+        if len(entries) <= max_wavs:
+            return
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for _, path in entries[max_wavs:]:
+            with contextlib.suppress(OSError):
+                os.remove(path)
 
     @property
     def proc_sr(self) -> int:

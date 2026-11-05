@@ -17,6 +17,7 @@ import json
 import logging
 import pathlib
 import re
+import tempfile
 import time
 from dataclasses import replace
 
@@ -116,6 +117,10 @@ AEC_CFG = cfg.get("aec", {})
 AEC_ENABLED = bool(AEC_CFG.get("enabled", False))
 AEC_MODEL_PREFIX = str(AEC_CFG.get("model_prefix", "")) or str(
     model_root() / "dtln-aec" / "dtln_aec_128")
+# Barge-in dumps are a diagnostic: off by default, and bounded when on so
+# a long session cannot fill /tmp with 576 KB wav triplets.
+AEC_DUMP_ON_BARGE_IN = bool(AEC_CFG.get("dump_on_barge_in", False))
+AEC_DUMP_MAX_WAVS = max(0, int(AEC_CFG.get("dump_max_wavs", 9)))
 BARGE_IN_MS = VAD_CFG.get("barge_in_ms", 400)
 BARGE_IN_GRACE_MS = VAD_CFG.get("playback_grace_ms", 300)
 BARGE_IN_THRESHOLD = VAD_CFG.get("barge_in_threshold", 0.75)
@@ -894,8 +899,9 @@ async def cut_off(ws: WebSocket, sess: Session):
     sess.turn_barged = True
     log.info("Barge-in: cutting off playback (speech_ms=%.0f)",
              sess.svad.speech_ms)
-    if sess.aec is not None:
-        sess.aec.dump(f"/tmp/aec-barge-{int(time.time() * 1000)}")
+    if sess.aec is not None and AEC_DUMP_ON_BARGE_IN:
+        sess.aec.dump(f"{tempfile.gettempdir()}/aec-barge-{int(time.time() * 1000)}",
+                      AEC_DUMP_MAX_WAVS)
     await send_json(ws, {"type": "stop_playback", "reason": "barge_in"})
     await cancel_turn(sess)
     await send_json(ws, {"type": "state", "value": "hearing"})
@@ -951,7 +957,11 @@ async def ws_endpoint(ws: WebSocket):
                 mtype = data.get("type")
                 if mtype == "mode":
                     cancel_nudge(sess)
-                    sess.mode = data["value"] if data["value"] in cfg["modes"] else DEFAULT_MODE
+                    # A malformed mode message must not raise out of the
+                    # handler and tear down the whole WebSocket.
+                    value = data.get("value")
+                    sess.mode = (value if isinstance(value, str)
+                                 and value in cfg["modes"] else DEFAULT_MODE)
                     # Mode and conversation are the same thing here: a reply
                     # in the wrong register is worse than a fresh start.
                     sess.history.clear()
