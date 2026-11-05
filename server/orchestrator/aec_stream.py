@@ -153,6 +153,24 @@ class UpstreamAec:
             self._thread.join(timeout=2.0)
             self._thread = None
 
+    def clear(self) -> None:
+        """Drop audio buffered while the server gated the uplink.
+
+        Frames arriving during a turn are discarded before they reach the
+        worker, so its partial stereo frame and any queued frames belong to
+        an older stretch of the stream. Keeping them would splice two
+        non-contiguous stretches together.
+        """
+        while True:
+            try:
+                self._in.get_nowait()
+            except queue.Empty:
+                break
+        self._leftover = b""
+        for name in self._dbg:
+            self._dbg[name].clear()
+            self._dbg_n[name] = 0
+
     def feed(self, data: bytes) -> None:
         """Hand one WebSocket binary frame to the AEC thread."""
         try:

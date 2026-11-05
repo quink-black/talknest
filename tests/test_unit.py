@@ -4,8 +4,10 @@ Run: ./venv/bin/python -m pytest tests/ -v
 """
 
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
@@ -393,3 +395,108 @@ class TestBargeInDue:
 
     def test_pending_turn_yields_to_a_real_question(self):
         assert barge_in_due(False, True, True, False, 3000, 0)
+
+
+class FakeAec:
+    def __init__(self):
+        self.cleared = 0
+        self.fed = []
+
+    def clear(self):
+        self.cleared += 1
+
+    def feed(self, data):
+        self.fed.append(data)
+
+
+class FakeVad:
+    def __init__(self):
+        self.feeds = 0
+        self.resets = 0
+        self.active = False
+        self.speech_ms = 0.0
+
+    def feed(self, pcm, thr=None):
+        self.feeds += 1
+        return []
+
+    def reset(self):
+        self.resets += 1
+        self.feeds = 0
+
+
+def _gated_session(busy):
+    return SimpleNamespace(
+        q=asyncio.Queue(), aec=FakeAec(), busy=busy, speaking=False,
+        svad=FakeVad(), turn_echo=False, turn_barged=False,
+        speaking_since=0.0,
+    )
+
+
+class TestUplinkGate:
+    # The 115 interrupts of the 2026-11-05 16:19-18:54 session fell into
+    # exactly three (busy, speaking) combinations: 79, 34 and 2. Each of
+    # them has to be gated now, while an idle stereo session is not.
+    @pytest.mark.parametrize("aec,busy,speaking,expected", [
+        (object(), True, False, True),
+        (object(), True, True, True),
+        (object(), False, True, True),
+        (object(), False, False, False),
+        (None, True, False, False),
+        (None, True, True, False),
+    ])
+    def test_gate_truth_table(self, aec, busy, speaking, expected):
+        sess = SimpleNamespace(aec=aec, busy=busy, speaking=speaking)
+        assert main.uplink_gated(sess) is expected
+
+    def test_mono_client_keeps_its_barge_in(self):
+        sess = SimpleNamespace(aec=None, busy=True, speaking=True)
+        assert not main.uplink_gated(sess)
+        assert barge_in_due(True, True, True, False, 2000, 2000)
+
+
+class TestResetUplink:
+    def test_stereo_session_clears_buffers_and_vad(self):
+        async def scenario():
+            sess = _gated_session(busy=False)
+            sess.q.put_nowait(b"stale")
+            sess.q.put_nowait(b"stale")
+            sess.svad.feeds = 3
+            main.reset_uplink(sess)
+            return sess.aec.cleared, sess.q.empty(), sess.svad.resets
+
+        assert asyncio.run(scenario()) == (1, True, 1)
+
+    def test_mono_session_is_left_alone(self):
+        async def scenario():
+            sess = SimpleNamespace(aec=None, q=asyncio.Queue(),
+                                   svad=FakeVad())
+            sess.q.put_nowait(b"keep")
+            main.reset_uplink(sess)
+            return sess.q.empty(), sess.svad.resets
+
+        assert asyncio.run(scenario()) == (False, 0)
+
+
+class TestGatedVadTask:
+    def _run_vad_task(self, sess):
+        async def scenario():
+            task = asyncio.create_task(main.vad_task(SimpleNamespace(), sess))
+            sess.q.put_nowait(b"\x00\x00" * 512)
+            await asyncio.sleep(0.02)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+
+    def test_frames_during_a_turn_never_reach_the_vad(self):
+        sess = _gated_session(busy=True)
+        self._run_vad_task(sess)
+        assert sess.svad.feeds == 0
+        assert sess.q.empty()
+
+    def test_frames_after_the_turn_reach_the_vad(self):
+        sess = _gated_session(busy=False)
+        self._run_vad_task(sess)
+        assert sess.svad.feeds == 1

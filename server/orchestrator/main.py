@@ -800,6 +800,7 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         await send_json(ws, {"type": "reply_done", "marks": marks})
     finally:
         worker.cancel()
+        reset_uplink(sess)
         if user_text:
             record_turn(sess, user_text, spoken, cancel.is_set(), who)
             if (TEACHING and not sess.compacting
@@ -857,6 +858,7 @@ async def nudge_turn(ws: WebSocket, sess: Session, phrase: str,
         await worker
     finally:
         worker.cancel()
+        reset_uplink(sess)
         if not cancel.is_set():
             await send_json(ws, {"type": "state", "value": "listening"})
 
@@ -907,9 +909,38 @@ async def cut_off(ws: WebSocket, sess: Session):
     await send_json(ws, {"type": "state", "value": "hearing"})
 
 
+def uplink_gated(sess: Session) -> bool:
+    """Stereo sessions listen only between turns (half duplex).
+
+    A mono client has already been processed by its own audio stack, so
+    it keeps the original always-listening behaviour.
+    """
+    return sess.aec is not None and (sess.busy or sess.speaking)
+
+
+def reset_uplink(sess: Session) -> None:
+    """Start the next turn from a clean VAD and empty buffers.
+
+    Audio captured while the uplink was gated must not reach the VAD when
+    the turn ends, or the first frame after the gap would look like the
+    tail of an utterance.
+    """
+    if sess.aec is None:
+        return
+    sess.aec.clear()
+    while True:
+        try:
+            sess.q.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+    sess.svad.reset()
+
+
 async def vad_task(ws: WebSocket, sess: Session):
     while True:
         raw = await sess.q.get()
+        if uplink_gated(sess):
+            continue
         if len(raw) % 2:
             # Not int16 PCM. Parsing it would raise out of this task and
             # leave the session streaming into a queue nobody reads.
@@ -1046,6 +1077,8 @@ async def ws_endpoint(ws: WebSocket):
                 elif mtype == "ping":
                     await send_json(ws, {"type": "pong"})
             elif (data := msg.get("bytes")) is not None and sess.streaming:
+                if uplink_gated(sess):
+                    continue
                 if sess.aec is not None:
                     sess.aec.feed(data)
                 else:
