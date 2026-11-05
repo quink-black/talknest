@@ -22,7 +22,27 @@ constexpr uint32_t HEARING_MS = 750;     // barge-in reaction before fallback
 constexpr uint32_t BLINK_MS = 150;       // how long eyes stay closed
 constexpr uint32_t TAP_MS = 240;         // tap bounce
 constexpr uint32_t ENVELOPE_TIMEOUT_MS = 150;
-constexpr uint32_t SCREEN_BG = 0x10141C;
+constexpr uint32_t ACTIVITY_MS = 100;
+constexpr int SCREEN_W = 410;
+constexpr int SCREEN_H = 502;
+constexpr uint32_t SCREEN_TOP = 0x142337;
+constexpr uint32_t SCREEN_BOTTOM = 0x0B121C;
+constexpr uint32_t PANEL_BG = 0x1B2D42;
+constexpr uint32_t HINT_COLOR = 0xA9BCD0;
+
+lv_obj_t *create_shape(lv_obj_t *parent, int width, int height,
+                       uint32_t color, lv_opa_t opacity)
+{
+    lv_obj_t *obj = lv_obj_create(parent);
+    lv_obj_set_size(obj, width, height);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(obj, opacity, LV_PART_MAIN);
+    lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(obj, 0, LV_PART_MAIN);
+    lv_obj_set_clickable(obj, false);
+    return obj;
+}
 
 uint32_t next_blink_ms(uint32_t now)
 {
@@ -71,31 +91,73 @@ esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback)
     }
 
     lv_obj_t *screen = lv_screen_active();
-    // The default theme is not initialised here, so BG_OPA would otherwise
-    // fall back to transparent and leave the display's power-on RAM visible
-    // as a green tint around the character. Force an opaque full-screen
-    // background and invalidate once so every pixel is painted.
-    lv_obj_set_style_bg_color(screen, lv_color_hex(SCREEN_BG), LV_PART_MAIN);
+    // Force an opaque gradient so no power-on RAM can show through. The
+    // lighter upper field separates the transparent silhouette from the
+    // background without adding a bitmap or an animated full-screen layer.
+    lv_obj_set_style_bg_color(screen, lv_color_hex(SCREEN_TOP), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(screen, lv_color_hex(SCREEN_BOTTOM),
+                                   LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_dir(screen, LV_GRAD_DIR_VER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
+    lv_obj_t *stage = create_shape(screen, 320, 104, 0x21415A, LV_OPA_40);
+    lv_obj_set_style_radius(stage, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_align(stage, LV_ALIGN_CENTER, 0, 143);
+
+    // Static ambient shapes keep idle animation cost with the character.
+    constexpr int bubbles[][4] = {
+        {30, 142, 8, 45}, {374, 178, 6, 40}, {24, 286, 5, 35},
+        {380, 314, 9, 40}, {48, 366, 4, 30}, {358, 104, 4, 30},
+    };
+    for (const auto &bubble : bubbles) {
+        lv_obj_t *obj = create_shape(screen, bubble[2], bubble[2], 0x79CFFF,
+                                     static_cast<lv_opa_t>(bubble[3]));
+        lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_align(obj, LV_ALIGN_TOP_LEFT, bubble[0], bubble[1]);
+    }
+
     // The character has a transparent silhouette (RGB565A8), so it blends
-    // into the background instead of showing a square edge.
+    // into the scene instead of showing a square edge.
     image_ = lv_image_create(screen);
-    lv_obj_align(image_, LV_ALIGN_CENTER, 0, -14);
+    lv_obj_align(image_, LV_ALIGN_CENTER, 0, -2);
     lv_image_set_src(image_, &frames_[AVATAR_FRAME_IDLE]);
     lv_image_set_inner_align(image_, LV_IMAGE_ALIGN_CENTER);
     current_frame_ = AVATAR_FRAME_IDLE;
 
+    status_panel_ = create_shape(screen, 268, 52, PANEL_BG, LV_OPA_90);
+    lv_obj_set_style_radius(status_panel_, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_border_width(status_panel_, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(status_panel_, lv_color_hex(HINT_COLOR),
+                                  LV_PART_MAIN);
+    lv_obj_set_style_border_opa(status_panel_, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_align(status_panel_, LV_ALIGN_TOP_MID, 0, 18);
+
+    for (int i = 0; i < 3; ++i) {
+        activity_[i] = create_shape(status_panel_, 8, 8, HINT_COLOR, LV_OPA_60);
+        lv_obj_set_style_radius(activity_[i], LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_align(activity_[i], LV_ALIGN_LEFT_MID, 22 + i * 12, 0);
+    }
+
+    status_label_ = lv_label_create(status_panel_);
+    lv_obj_set_style_text_font(status_label_, &lv_font_montserrat_24,
+                               LV_PART_MAIN);
+    lv_obj_set_style_text_color(status_label_, lv_color_hex(HINT_COLOR),
+                                LV_PART_MAIN);
+    lv_obj_align(status_label_, LV_ALIGN_LEFT_MID, 64, 0);
+    lv_obj_set_clickable(status_label_, false);
+
+    hint_label_ = lv_label_create(screen);
+    lv_obj_set_width(hint_label_, 380);
+    lv_obj_set_style_text_font(hint_label_, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(hint_label_, lv_color_hex(HINT_COLOR),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_align(hint_label_, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(hint_label_, LV_ALIGN_BOTTOM_MID, 0, -24);
+    lv_obj_set_clickable(hint_label_, false);
+
     // Transient information lives on the top layer: it never reserves space
     // and only appears when there is something to say.
     lv_obj_t *overlay = lv_layer_top();
-
-    thought_ = lv_label_create(overlay);
-    lv_label_set_text(thought_, "...");
-    lv_obj_set_style_text_font(thought_, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_set_style_text_color(thought_, lv_color_hex(0xFFB74D), LV_PART_MAIN);
-    lv_obj_align(thought_, LV_ALIGN_TOP_RIGHT, -24, 96);
-    lv_obj_set_hidden(thought_, true);
 
     // Only short ASCII messages go here. Reply sentences are Chinese and the
     // firmware has no CJK font, so they stay in the serial log.
@@ -107,20 +169,20 @@ esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback)
     lv_obj_set_style_text_align(message_label_, LV_TEXT_ALIGN_CENTER,
                                 LV_PART_MAIN);
     lv_label_set_long_mode(message_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_bg_color(message_label_, lv_color_hex(SCREEN_BG),
+    lv_obj_set_style_bg_color(message_label_, lv_color_hex(PANEL_BG),
                               LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(message_label_, LV_OPA_70, LV_PART_MAIN);
-    lv_obj_align(message_label_, LV_ALIGN_BOTTOM_MID, 0, -24);
+    lv_obj_set_style_bg_opa(message_label_, LV_OPA_90, LV_PART_MAIN);
+    lv_obj_set_style_radius(message_label_, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(message_label_, 8, LV_PART_MAIN);
+    lv_obj_align(message_label_, LV_ALIGN_BOTTOM_MID, 0, -20);
     lv_label_set_text(message_label_, "");
-    // Labels must not intercept clicks: they sit above the image on the top
-    // layer and would otherwise swallow taps on the bottom strip.
-    lv_obj_set_clickable(thought_, false);
+    lv_obj_set_hidden(message_label_, true);
     lv_obj_set_clickable(message_label_, false);
 
     // The click layer lives on the same top layer and is raised above the
     // labels, so it owns every tap regardless of label hit-testing.
     touch_layer_ = lv_obj_create(overlay);
-    lv_obj_set_size(touch_layer_, 410, 502);
+    lv_obj_set_size(touch_layer_, SCREEN_W, SCREEN_H);
     lv_obj_set_style_bg_opa(touch_layer_, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(touch_layer_, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(touch_layer_, 0, LV_PART_MAIN);
@@ -129,13 +191,14 @@ esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback)
     lv_obj_move_foreground(touch_layer_);
     lv_obj_add_event_cb(touch_layer_, on_screen_clicked, LV_EVENT_CLICKED, this);
 
+    now_ms_ = lv_tick_get();
+    blink_at_ms_ = next_blink_ms(now_ms_);
+    last_envelope_ms_ = now_ms_;
+    apply_state(load_state(state_));
     lv_obj_invalidate(screen);
     bsp_display_unlock();
     bsp_display_brightness_set(70);
 
-    now_ms_ = lv_tick_get();
-    blink_at_ms_ = next_blink_ms(now_ms_);
-    last_envelope_ms_ = now_ms_;
     timer_ = lv_timer_create(on_timer, TIMER_MS, this);
     return ESP_OK;
 }
@@ -195,13 +258,99 @@ void UiAvatar::apply_events()
 
     if (error_pending_.exchange(false, std::memory_order_acquire)) {
         lv_label_set_text(message_label_, error_text_);
+        lv_obj_set_hidden(message_label_, false);
+        lv_obj_set_hidden(hint_label_, true);
         message_until_ms_ = now_ms_ + MESSAGE_MS;
     } else if (message_until_ms_ != 0 && now_ms_ >= message_until_ms_) {
         message_until_ms_ = 0;
         lv_label_set_text(message_label_, "");
+        lv_obj_set_hidden(message_label_, true);
+        lv_obj_set_hidden(hint_label_, false);
     }
 
-    lv_obj_set_hidden(thought_, state != avatar_logic::State::Thinking);
+    if (visible_state_ != static_cast<int>(state)) {
+        apply_state(state);
+    }
+}
+
+void UiAvatar::apply_state(avatar_logic::State state)
+{
+    const char *status = "HELLO";
+    const char *hint = "Tap to say hi";
+    uint32_t color = HINT_COLOR;
+
+    switch (state) {
+    case avatar_logic::State::Listening:
+        status = "LISTENING";
+        hint = "Talk to me";
+        color = 0x72E4C1;
+        break;
+    case avatar_logic::State::Thinking:
+        status = "THINKING";
+        hint = "One moment...";
+        color = 0xFFBF69;
+        break;
+    case avatar_logic::State::Speaking:
+        status = "SPEAKING";
+        hint = "Tap to stop";
+        color = 0xC5B5FF;
+        break;
+    case avatar_logic::State::Hearing:
+        status = "HEARD YOU";
+        hint = "Talk to me";
+        color = 0x79CFFF;
+        break;
+    case avatar_logic::State::Idle:
+    default:
+        break;
+    }
+
+    visible_state_ = static_cast<int>(state);
+    lv_label_set_text(status_label_, status);
+    lv_label_set_text(hint_label_, hint);
+    lv_obj_set_style_text_color(status_label_, lv_color_hex(color), LV_PART_MAIN);
+    lv_obj_set_style_border_color(status_panel_, lv_color_hex(color), LV_PART_MAIN);
+    for (lv_obj_t *obj : activity_) {
+        lv_obj_set_style_bg_color(obj, lv_color_hex(color), LV_PART_MAIN);
+    }
+    last_activity_ms_ = now_ms_ - ACTIVITY_MS;
+}
+
+void UiAvatar::apply_activity(avatar_logic::State state, uint8_t rms)
+{
+    if (now_ms_ - last_activity_ms_ < ACTIVITY_MS) {
+        return;
+    }
+    last_activity_ms_ = now_ms_;
+
+    int heights[3] = {8, 8, 8};
+    lv_opa_t opacities[3] = {LV_OPA_60, LV_OPA_60, LV_OPA_60};
+    const int phase = static_cast<int>((now_ms_ / 300) % 3);
+    switch (state) {
+    case avatar_logic::State::Listening:
+    case avatar_logic::State::Thinking:
+        opacities[phase] = LV_OPA_COVER;
+        break;
+    case avatar_logic::State::Speaking:
+        heights[0] = 8 + static_cast<int>(rms) * 12 / 255;
+        heights[1] = 8 + static_cast<int>(rms) * 24 / 255;
+        heights[2] = 8 + static_cast<int>(rms) * 16 / 255;
+        opacities[0] = opacities[1] = opacities[2] = LV_OPA_COVER;
+        break;
+    case avatar_logic::State::Hearing:
+        heights[0] = heights[1] = heights[2] = 10;
+        opacities[0] = opacities[1] = opacities[2] = LV_OPA_COVER;
+        break;
+    case avatar_logic::State::Idle:
+    default:
+        opacities[0] = LV_OPA_COVER;
+        break;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        lv_obj_set_height(activity_[i], heights[i]);
+        lv_obj_set_style_bg_opa(activity_[i], opacities[i], LV_PART_MAIN);
+    }
 }
 
 void UiAvatar::apply_frame(int frame)
@@ -257,6 +406,7 @@ void UiAvatar::on_timer(lv_timer_t *timer)
     const uint8_t rms = playing ?
         self->envelope_.load(std::memory_order_relaxed) : 0;
     const avatar_logic::State state = load_state(self->state_);
+    self->apply_activity(state, rms);
 
     const bool blinking = self->now_ms_ >= self->blink_at_ms_ &&
                           self->now_ms_ < self->blink_at_ms_ + BLINK_MS;

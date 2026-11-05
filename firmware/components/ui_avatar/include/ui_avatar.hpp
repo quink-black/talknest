@@ -9,9 +9,9 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
-/* Dialogue-driven avatar. The character is the only permanent element on
- * the screen. Connection and configuration diagnostics stay in the serial
- * log; a short error message briefly overlays the screen when needed.
+/* Dialogue-driven avatar in a layered underwater scene. The character is
+ * the only permanent subject; ambient shapes, one status indicator and one
+ * contextual hint frame it without exposing connection diagnostics.
  *
  * Threading contract: every method except initialize()/suspend()/resume()
  * may be called from any task and only touches atomics. The LVGL timer
@@ -42,8 +42,11 @@ private:
 
     std::function<void()> interrupt_callback_;
     lv_obj_t *image_ = nullptr;
+    lv_obj_t *status_panel_ = nullptr;
+    lv_obj_t *status_label_ = nullptr;
+    lv_obj_t *activity_[3] = {};
+    lv_obj_t *hint_label_ = nullptr;
     lv_obj_t *message_label_ = nullptr;
-    lv_obj_t *thought_ = nullptr;
     lv_obj_t *touch_layer_ = nullptr;
     lv_timer_t *timer_ = nullptr;
     lv_image_dsc_t frames_[AVATAR_FRAME_COUNT] = {};
@@ -64,12 +67,16 @@ private:
     uint32_t message_until_ms_ = 0;
     uint32_t last_envelope_ms_ = 0;
     uint32_t last_envelope_seq_ = 0;
+    uint32_t last_activity_ms_ = 0;
     int current_frame_ = -1;
+    int visible_state_ = -1;
     bool can_interrupt_ = false;
     bool display_locked_ = false;
     bool hearing_active_ = false;
 
     void apply_events();
+    void apply_state(avatar_logic::State state);
+    void apply_activity(avatar_logic::State state, uint8_t rms);
     void apply_frame(int frame);
     void apply_pose(int32_t scale_y, int32_t dx, int32_t dy);
     static void on_timer(lv_timer_t *timer);

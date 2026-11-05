@@ -4,13 +4,16 @@
 
 ### 形象
 
-屏幕常驻一个互动形象，随对话状态与播放音频连续变化：四帧表情（睁/闭眼 × 闭/张嘴）、呼吸起伏、侧头、说话弹跳与眨眼。形象以透明轮廓铺满屏幕中部，连接与配置细节不上屏。
+屏幕以保留颈部和上半身的互动形象为常驻主体，并通过深蓝渐变背景、水下舞台和少量环境光点构成完整的海底场景。形象随对话状态与播放音频连续变化：四帧表情（睁/闭眼 × 闭/张嘴）、呼吸起伏、侧头、说话弹跳与眨眼。顶部状态胶囊显示当前对话状态，底部显示与状态对应的行动提示；说话短柱由真实播放音量驱动，聆听与思考使用三点活动指示。连接与配置细节不上屏，中文回复正文仍只写入串口日志。
 
 表情帧由 `scripts/gen_avatar_frames.py` 从 `web/whale_front.webp` 离线生成，输出 `components/ui_avatar/assets/avatar_frames.bin`（RGB565A8，含 alpha 通道），构建时通过 `EMBED_FILES` 编入固件。修改形象后，用装有 Pillow、numpy 与 scipy 的 Python 环境重新生成并构建：
 
 ```bash
 python scripts/gen_avatar_frames.py --preview /tmp/avatar.png
+python scripts/gen_avatar_frames.py --layout-preview /tmp/screen.png
 ```
+
+第二条命令生成 410×502 的整屏近似预览，用于检查背景层次、头像轮廓、顶部状态和底部提示的布局。
 
 ## 配置
 

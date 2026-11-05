@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "web" / "whale_front.webp"
@@ -32,14 +32,15 @@ INCLUDE = REPO / "firmware" / "components" / "ui_avatar" / "include"
 BINARY = ASSETS / "avatar_frames.bin"
 HEADER = INCLUDE / "avatar_frames.h"
 
-# Face-focused portrait: the character fills the frame. The crop lands on
-# opaque pixels on the sides and bottom, so those edges are feathered to
-# keep the silhouette from showing a hard rectangle.
-CROP = (59, 20, 259, 225)
-SIZE = (300, 308)
-BG = (16, 20, 28)  # screen background, used only for transparent-edge padding
+# Half-body portrait: keep the neck, collar, arms and apron visible so the
+# character reads as a person rather than a floating face. The lower edge is
+# feathered where the crop cuts the body; side feathering softens the
+# outermost silhouette.
+CROP = (0, 0, 318, 330)
+SIZE = (300, 311)
+BG = (16, 20, 28)  # RGB padding for alpha-edge compositing; device uses a gradient
 
-# Feature coordinates in source pixels (calibrated on the gridded face crop).
+# Feature coordinates in source image pixels.
 EYES = [(98, 138, 140, 180), (180, 138, 222, 180)]
 EYE_ARCS = [(101, 150, 137, 166), (183, 150, 219, 166)]
 MOUTH = (149, 183, 169, 200)
@@ -191,11 +192,43 @@ def preview(frames, path):
 
 
 def layout_preview(frames, path):
-    """Whole-screen approximation of what the device shows."""
-    screen = Image.new("RGBA", (410, 502), BG + (255,))
-    cx, cy = 205, 251 - 14
+    """Whole-screen approximation of the ambient scene and idle state."""
+    width, height = 410, 502
+    screen = Image.new("RGBA", (width, height))
+    draw = ImageDraw.Draw(screen, "RGBA")
+    top, bottom = (20, 35, 55), (11, 18, 28)
+    for y in range(height):
+        t = y / (height - 1)
+        color = tuple(round(a * (1 - t) + b * t) for a, b in zip(top, bottom))
+        draw.line((0, y, width, y), fill=color + (255,))
+
+    draw.rounded_rectangle((45, 342, 365, 446), radius=52,
+                           fill=(33, 65, 90, 102))
+    for x, y, size, opacity in (
+        (30, 142, 8, 45), (374, 178, 6, 40), (24, 286, 5, 35),
+        (380, 314, 9, 40), (48, 366, 4, 30), (358, 104, 4, 30),
+    ):
+        draw.ellipse((x, y, x + size, y + size), fill=(121, 207, 255, opacity))
+
+    cx, cy = 205, 251 - 2
     avatar = frames["idle"]
     screen.alpha_composite(avatar, (cx - SIZE[0] // 2, cy - SIZE[1] // 2))
+
+    draw.rounded_rectangle((71, 18, 339, 70), radius=26,
+                           fill=(27, 45, 66, 230), outline=(169, 188, 208, 178))
+    for i in range(3):
+        x = 93 + i * 12
+        opacity = 255 if i == 0 else 153
+        draw.ellipse((x, 40, x + 8, 48), fill=(169, 188, 208, opacity))
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except OSError:
+        font = ImageFont.load_default()
+    draw.text((135, 44), "HELLO", font=font, fill=(169, 188, 208, 255),
+              anchor="lm")
+    draw.text((205, 462), "Tap to say hi", font=font,
+              fill=(169, 188, 208, 255), anchor="mm")
+
     screen.convert("RGB").save(path)
     print(f"layout preview {path}")
 
