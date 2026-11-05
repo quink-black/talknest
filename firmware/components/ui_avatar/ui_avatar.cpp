@@ -276,7 +276,7 @@ void UiAvatar::apply_events()
 void UiAvatar::apply_state(avatar_logic::State state)
 {
     const char *status = "HELLO";
-    const char *hint = "Tap to say hi";
+    const char *hint = "Say hello";
     uint32_t color = HINT_COLOR;
 
     switch (state) {
