@@ -14,8 +14,10 @@ autocorrelated speech reference), the Wiener-Hopf equations are solved
 over a sliding window every refresh: FFT correlations give the Toeplitz
 system, conjugate gradient solves it with diagonal loading for stability,
 and a validation gate keeps the incumbent filter unless the new one
-cancels better over the window. numpy only -- the server venv has no
-scipy.
+cancels better on a hold-out tail that the solve never saw -- a
+least-squares fit is optimal on its own samples, so gating on the same
+window would adopt every double-talk-polluted estimate. numpy only --
+the server venv has no scipy.
 """
 
 import numpy as np
@@ -74,6 +76,10 @@ class WienerAec:
         self.L = taps
         self.window = int(window_s * sr)
         self.refresh = int(refresh_s * sr)
+        # The validation tail must never overlap the solve window: a
+        # least-squares fit is optimal on its own data, so gating on the
+        # same samples would adopt every double-talk-polluted estimate.
+        self.validate = max(int(0.25 * sr), self.L)
         self.g = np.zeros(taps, dtype=np.float64)
         self.hist = np.zeros(taps - 1, dtype=np.float64)
         self._ref = np.zeros(0, dtype=np.float64)
@@ -81,6 +87,7 @@ class WienerAec:
         self._since = 0
         self.solves = 0
         self.adopted = 0
+        self.rejected = 0
 
     def _solve_path(self, ref, mic):
         c = _fft_xcorr_lags(ref, ref, self.L - 1)
@@ -109,19 +116,37 @@ class WienerAec:
             W = len(self._ref)
             # Solve only when the window holds real far-end energy;
             # silence carries no path information.
-            if W >= self.L and float(np.dot(self._ref, self._ref)) > 1e-6 * W:
-                g_new = self._solve_path(self._ref, self._mic)
-                self.solves += 1
-                if np.isfinite(g_new).all():
-                    # Validation gate: adopt only when the new estimate
-                    # cancels better over the window than the incumbent,
-                    # so a solve polluted by double-talk cannot regress.
-                    pad = np.concatenate([np.zeros(self.L - 1), self._ref])
-                    y_new = np.convolve(pad, g_new, mode="valid")[:W]
-                    y_old = np.convolve(pad, self.g, mode="valid")[:W]
-                    e_new = float(np.sum((self._mic - y_new) ** 2))
-                    e_old = float(np.sum((self._mic - y_old) ** 2))
-                    if e_new < e_old:
-                        self.g = g_new
-                        self.adopted += 1
+            if W >= self.L + self.validate and \
+                    float(np.dot(self._ref, self._ref)) > 1e-6 * W:
+                pad = np.concatenate([np.zeros(self.L - 1), self._ref])
+                y_old = np.convolve(pad, self.g, mode="valid")[:W]
+                mic_pow = float(np.dot(self._mic, self._mic))
+                echo_pow = float(np.dot(y_old, y_old))
+                # Double-talk guard. A hold-out tail alone cannot stop a
+                # polluted solve: with enough taps the fit tracks the
+                # near-end statistics, which hold on the validation tail
+                # too. What it cannot fake is total energy -- near-end
+                # speech adds power the echo path does not explain. When
+                # the mic carries well beyond the modeled echo, freeze
+                # the incumbent; before any convergence there is nothing
+                # to protect, so always solve.
+                if echo_pow < 1e-9 * W or mic_pow < 4.0 * echo_pow:
+                    # Fit on the head of the window, validate on the
+                    # disjoint tail, so a solve is judged on samples it
+                    # never saw.
+                    fit = W - self.validate
+                    g_new = self._solve_path(self._ref[:fit], self._mic[:fit])
+                    self.solves += 1
+                    if np.isfinite(g_new).all():
+                        y_new = np.convolve(pad, g_new, mode="valid")[:W][fit:]
+                        y_old_v = y_old[fit:]
+                        e_new = float(np.sum((self._mic[fit:] - y_new) ** 2))
+                        e_old = float(np.sum((self._mic[fit:] - y_old_v) ** 2))
+                        if e_new < e_old:
+                            self.g = g_new
+                            self.adopted += 1
+                        else:
+                            self.rejected += 1
+                else:
+                    self.rejected += 1
         return out
