@@ -15,9 +15,16 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
+# orchestrator.vad imports onnxruntime at module level, so this skip has
+# to run before that import chain starts.
+pytest.importorskip("onnxruntime")
+from orchestrator.config import model_root  # noqa: E402
 from orchestrator.vad import SileroVAD, onnx_session  # noqa: E402
 
-pytest.importorskip("onnxruntime")
+pytestmark = pytest.mark.skipif(
+    not (model_root() / "silero-vad" / "silero_vad.onnx").exists(),
+    reason="Silero VAD weights are machine-local",
+)
 
 
 def test_sessions_share_one_model():

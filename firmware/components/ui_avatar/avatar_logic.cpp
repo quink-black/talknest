@@ -25,22 +25,34 @@ State parse_state(const char *value)
     if (value == nullptr) {
         return State::Idle;
     }
-    if (std::strcmp(value, "listening") == 0) {
+    // The callers send capitalised phase names ("Connecting",
+    // "Reconnecting", "Sleeping"); compare case-insensitively so this
+    // mapping cannot drift apart from the literals they use.
+    char buf[16];
+    size_t n = 0;
+    for (; value[n] != '\0' && n < sizeof(buf) - 1; ++n) {
+        buf[n] = static_cast<char>(value[n] >= 'A' && value[n] <= 'Z'
+                                       ? value[n] - 'A' + 'a'
+                                       : value[n]);
+    }
+    buf[n] = '\0';
+
+    if (std::strcmp(buf, "listening") == 0) {
         return State::Listening;
     }
-    if (std::strcmp(value, "thinking") == 0 ||
-        std::strcmp(value, "preparing") == 0) {
+    if (std::strcmp(buf, "thinking") == 0 ||
+        std::strcmp(buf, "preparing") == 0) {
         return State::Thinking;
     }
-    if (std::strcmp(value, "speaking") == 0) {
+    if (std::strcmp(buf, "speaking") == 0) {
         return State::Speaking;
     }
-    if (std::strcmp(value, "hearing") == 0) {
+    if (std::strcmp(buf, "hearing") == 0) {
         return State::Hearing;
     }
-    if (std::strcmp(value, "connecting") == 0 ||
-        std::strcmp(value, "reconnecting") == 0 ||
-        std::strcmp(value, "sleeping") == 0) {
+    if (std::strcmp(buf, "connecting") == 0 ||
+        std::strcmp(buf, "reconnecting") == 0 ||
+        std::strcmp(buf, "sleeping") == 0) {
         return State::Waiting;
     }
     return State::Idle;

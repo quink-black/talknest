@@ -88,6 +88,7 @@ class WienerAec:
         self.solves = 0
         self.adopted = 0
         self.rejected = 0
+        self.frozen = 0
 
     def _solve_path(self, ref, mic):
         c = _fft_xcorr_lags(ref, ref, self.L - 1)
@@ -137,6 +138,7 @@ class WienerAec:
                     fit = W - self.validate
                     g_new = self._solve_path(self._ref[:fit], self._mic[:fit])
                     self.solves += 1
+                    self.frozen = 0
                     if np.isfinite(g_new).all():
                         y_new = np.convolve(pad, g_new, mode="valid")[:W][fit:]
                         y_old_v = y_old[fit:]
@@ -149,4 +151,28 @@ class WienerAec:
                             self.rejected += 1
                 else:
                     self.rejected += 1
+                    self.frozen += 1
+                    # The energy guard cannot tell near-end speech from a
+                    # real gain change on the echo path: both raise the
+                    # mic power above the modeled echo. Freezing through
+                    # three refreshes without relief means the path may
+                    # have moved, so solve once and demand an
+                    # unambiguous -- 12 dB, far beyond what fitting
+                    # near-end statistics delivers -- improvement on the
+                    # hold-out tail before adopting. A true double-talk
+                    # span fails that bar; a moved path clears it.
+                    if self.frozen >= 3:
+                        self.frozen = 0
+                        fit = W - self.validate
+                        g_new = self._solve_path(self._ref[:fit],
+                                                 self._mic[:fit])
+                        self.solves += 1
+                        if np.isfinite(g_new).all():
+                            y_new = np.convolve(pad, g_new,
+                                                mode="valid")[:W][fit:]
+                            e_new = float(np.sum((self._mic[fit:] - y_new) ** 2))
+                            e_old = float(np.sum((self._mic[fit:] - y_old[fit:]) ** 2))
+                            if e_new < 0.25 * e_old:
+                                self.g = g_new
+                                self.adopted += 1
         return out

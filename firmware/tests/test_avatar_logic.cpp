@@ -19,6 +19,12 @@ int main()
     assert(parse_state("connecting") == State::Waiting);
     assert(parse_state("reconnecting") == State::Waiting);
     assert(parse_state("sleeping") == State::Waiting);
+    // The callers send capitalised phase names; the mapping must not
+    // drift apart from those literals (regression for the case-sensitive
+    // strcmp that made the Waiting branch unreachable).
+    assert(parse_state("Connecting") == State::Waiting);
+    assert(parse_state("Reconnecting") == State::Waiting);
+    assert(parse_state("Sleeping") == State::Waiting);
     assert(parse_state("idle") == State::Idle);
     assert(parse_state(nullptr) == State::Idle);
     assert(parse_state("") == State::Idle);

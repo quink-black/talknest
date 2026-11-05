@@ -65,12 +65,23 @@ def feed(aec, mic, ref):
     return out
 
 
-def make_signal(double_talk_from=None, double_talk_until=None, n_s=6.0):
-    """Far-end echo; near-end speech between the two marks, if given."""
+def make_signal(double_talk_from=None, double_talk_until=None, n_s=6.0,
+                gain_schedule=None):
+    """Far-end echo; near-end speech between the two marks, if given.
+
+    `gain_schedule` maps seconds to a linear gain on the echo path, for
+    tests where the speaker-to-mic path changes mid-stream.
+    """
     n = int(n_s * SR)
     ref = colored_noise(n, seed=11)
     h = echo_path(TAPS, seed=23)
     echo = np.convolve(ref, h)[:n]
+    if gain_schedule:
+        gain = np.ones(n)
+        for t0, g in gain_schedule.items():
+            start = int(t0 * SR)
+            gain[start:] = g
+        echo *= gain
     mic = echo + 0.01 * colored_noise(n, seed=37)
     if double_talk_from is not None:
         start = int(double_talk_from * SR)
@@ -118,3 +129,13 @@ def test_no_solve_on_silent_far_end():
     mic = 0.5 * colored_noise(n, seed=53)  # near-end only
     aec, _ = run(mic, np.zeros(n))
     assert aec.solves == 0
+
+
+def test_echo_gain_increase_recovers():
+    # The energy guard compares against the modeled echo: when the real
+    # path gains, the guard would freeze forever, so the filter must be
+    # forced to re-solve and win on the hold-out tail.
+    mic, ref = make_signal(n_s=8.0, gain_schedule={4.0: 2.5})  # +8 dB
+    aec, out = run(mic, ref)
+    after = slice(int(6.5 * SR), None)
+    assert erle_db(mic[after], out[after]) > 15.0

@@ -15,11 +15,26 @@ from starlette.websockets import WebSocketDisconnect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 
+# orchestrator.main imports vad, which imports onnxruntime at module
+# level, so the skip has to come before that import chain runs.
+pytest.importorskip("onnxruntime")
+from orchestrator.config import model_root  # noqa: E402
 from orchestrator import main  # noqa: E402
+
+# Session() builds a SileroVAD on connect, which loads the Silero
+# weights; without them every case here would error out.
+pytestmark = pytest.mark.skipif(
+    not Path(model_root() / "silero-vad" / "silero_vad.onnx").exists(),
+    reason="Silero VAD weights are machine-local",
+)
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
+    # Session() opens the default learner and touches the curriculum
+    # store on connect; keep every run off the real data directory, as
+    # the speaker tests do.
+    monkeypatch.setenv("TALKNEST_DATA_DIR", str(tmp_path))
     return TestClient(main.app)
 
 
