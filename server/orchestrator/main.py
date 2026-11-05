@@ -41,6 +41,19 @@ from .vad import SileroVAD, StreamVAD
 cfg = load()
 app = FastAPI(title="talknest-orchestrator")
 log = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def _preload_vad() -> None:
+    # Loading the ONNX model takes long enough that doing it inside a live
+    # session would stall the loop for every new connection; pay it once at
+    # startup, off the loop.
+    try:
+        await asyncio.to_thread(SileroVAD)  # noqa: F841 -- warms the shared session
+    except Exception as exc:  # model missing is tolerated per session
+        log.warning("VAD warm-up skipped: %s", exc)
+
+
 # uvicorn configures only its own loggers; without a root handler the
 # session-level INFO lines (VAD turns, AEC levels) never reach the log.
 logging.basicConfig(level=logging.INFO,
@@ -958,9 +971,14 @@ async def ws_endpoint(ws: WebSocket):
                             problem = "disabled (aec.enabled in config.yaml)"
                         else:
                             try:
-                                from .aec import DtlnAec
-                                from .aec_stream import UpstreamAec
-                                sess.aec = UpstreamAec(DtlnAec(AEC_MODEL_PREFIX))
+                                def build_aec():
+                                    from .aec import DtlnAec
+                                    from .aec_stream import UpstreamAec
+                                    return UpstreamAec(DtlnAec(AEC_MODEL_PREFIX))
+                                # Loading two TFLite models takes long
+                                # enough to starve every other session's
+                                # audio if done on the loop.
+                                sess.aec = await asyncio.to_thread(build_aec)
                                 sess.aec.start(asyncio.get_running_loop(), sess.q)
                             except Exception as exc:
                                 sess.aec = None
@@ -985,8 +1003,11 @@ async def ws_endpoint(ws: WebSocket):
                         sess.vad_task.cancel()
                         sess.vad_task = None
                     if sess.aec is not None:
-                        sess.aec.stop()
+                        aec = sess.aec
                         sess.aec = None
+                        # stop() joins the worker for up to 2 s; keep that
+                        # wait off the event loop.
+                        await asyncio.to_thread(aec.stop)
                 elif mtype == "interrupt":
                     sess.turn_barged = True
                     await send_json(ws, {"type": "stop_playback", "reason": "manual"})
@@ -1027,8 +1048,9 @@ async def ws_endpoint(ws: WebSocket):
         if sess.vad_task:
             sess.vad_task.cancel()
         if sess.aec is not None:
-            sess.aec.stop()
+            aec = sess.aec
             sess.aec = None
+            await asyncio.to_thread(aec.stop)
         if DIGEST_MODE == "on_disconnect" and sess.session_id is not None:
             await write_portrait(sess)
         sess.close()

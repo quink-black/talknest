@@ -47,14 +47,46 @@ class Resampler:
         return out
 
 
-class SileroVAD:
-    def __init__(self, threshold: float = 0.5, model_path: str = MODEL_PATH):
+_SHARED_ONNX = None
+
+
+def onnx_session():
+    """The process-wide InferenceSession, loaded once.
+
+    Sessions are safe to run concurrently, and everything stateful in the
+    VAD (the LSTM tensors) lives in numpy arrays on each SileroVAD
+    instance, so every connection can share one model. Loading it on the
+    session path would stall the event loop for every new connection.
+    """
+    global _SHARED_ONNX
+    if _SHARED_ONNX is None:
         opts = onnxruntime.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
-        self.session = onnxruntime.InferenceSession(
-            model_path, sess_options=opts, providers=["CPUExecutionProvider"]
+        _SHARED_ONNX = onnxruntime.InferenceSession(
+            MODEL_PATH, sess_options=opts, providers=["CPUExecutionProvider"]
         )
+    return _SHARED_ONNX
+
+
+def warm_up() -> None:
+    """Load the model ahead of the first connection."""
+    onnx_session()
+
+
+class SileroVAD:
+    def __init__(self, threshold: float = 0.5, model_path: str = MODEL_PATH):
+        if model_path != MODEL_PATH:
+            # Callers may point at an explicit model file (tests, benches);
+            # that still deserves its own session.
+            opts = onnxruntime.SessionOptions()
+            opts.inter_op_num_threads = 1
+            opts.intra_op_num_threads = 1
+            self.session = onnxruntime.InferenceSession(
+                model_path, sess_options=opts, providers=["CPUExecutionProvider"]
+            )
+        else:
+            self.session = onnx_session()
         self.threshold = threshold
         self._inputs = {i.name: i.shape for i in self.session.get_inputs()}
         self.reset()
