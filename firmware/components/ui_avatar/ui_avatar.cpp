@@ -300,6 +300,13 @@ void UiAvatar::apply_state(avatar_logic::State state)
         hint = "Talk to me";
         color = 0x79CFFF;
         break;
+    case avatar_logic::State::Waiting:
+        // The session is not up; nothing here may claim readiness and no
+        // action is available to promise.
+        status = "WAIT";
+        hint = "";
+        color = HINT_COLOR;
+        break;
     case avatar_logic::State::Idle:
     default:
         break;

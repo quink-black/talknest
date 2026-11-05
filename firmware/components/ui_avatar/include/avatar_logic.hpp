@@ -7,12 +7,16 @@
 namespace avatar_logic {
 
 /* Dialogue states as seen on the wire. "hearing" is a transient barge-in
- * override, not a peer of the other four, so it maps to a short reaction. */
+ * override, not a peer of the other four, so it maps to a short reaction.
+ * Waiting covers the client's own connection phases (connecting,
+ * reconnecting, sleeping): the session is not up and the screen must not
+ * claim readiness. */
 enum class State : uint8_t {
     Listening,
     Thinking,
     Speaking,
     Hearing,
+    Waiting,
     Idle,
 };
 

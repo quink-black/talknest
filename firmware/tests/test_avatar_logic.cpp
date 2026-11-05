@@ -9,12 +9,16 @@ using namespace avatar_logic;
 
 int main()
 {
-    // State parsing covers the five wire values plus unknown/empty.
+    // State parsing covers the wire values, the client's own connection
+    // phases, and unknown/empty.
     assert(parse_state("listening") == State::Listening);
     assert(parse_state("hearing") == State::Hearing);
     assert(parse_state("thinking") == State::Thinking);
     assert(parse_state("preparing") == State::Thinking);
     assert(parse_state("speaking") == State::Speaking);
+    assert(parse_state("connecting") == State::Waiting);
+    assert(parse_state("reconnecting") == State::Waiting);
+    assert(parse_state("sleeping") == State::Waiting);
     assert(parse_state("idle") == State::Idle);
     assert(parse_state(nullptr) == State::Idle);
     assert(parse_state("") == State::Idle);

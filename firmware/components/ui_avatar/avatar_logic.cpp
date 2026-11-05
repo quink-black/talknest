@@ -38,6 +38,11 @@ State parse_state(const char *value)
     if (std::strcmp(value, "hearing") == 0) {
         return State::Hearing;
     }
+    if (std::strcmp(value, "connecting") == 0 ||
+        std::strcmp(value, "reconnecting") == 0 ||
+        std::strcmp(value, "sleeping") == 0) {
+        return State::Waiting;
+    }
     return State::Idle;
 }
 
