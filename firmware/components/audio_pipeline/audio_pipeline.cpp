@@ -12,6 +12,9 @@
 namespace {
 constexpr char TAG[] = "audio";
 constexpr TickType_t PLAYBACK_TAIL = pdMS_TO_TICKS(150);
+/* The speaker and the room keep sounding after the last sample is written.
+ * Capture stays closed this long so that tail is never heard as speech. */
+constexpr TickType_t UPSTREAM_SETTLE = pdMS_TO_TICKS(600);
 
 void drain_stream(StreamBufferHandle_t stream, SemaphoreHandle_t mutex)
 {
@@ -75,16 +78,12 @@ esp_err_t AudioPipeline::initialize(const AudioPipelineConfig &config,
     config_ = config;
     playback_finished_callback_ = std::move(playback_finished_callback);
     playback_level_callback_ = std::move(playback_level_callback);
-    upstream_channels_ = config_.full_duplex ? 2 : 1;
     playback_prebuffer_bytes_ =
         static_cast<size_t>(config_.playback_prebuffer_ms) *
         BOARD_AUDIO_SAMPLE_RATE * sizeof(int16_t) / 1000;
     ESP_LOGI(TAG, "Playback prebuffer: %d ms (%u bytes)",
              config_.playback_prebuffer_ms,
              static_cast<unsigned int>(playback_prebuffer_bytes_));
-    if (config_.full_duplex) {
-        ESP_LOGI(TAG, "Full duplex upstream: mic + reference stereo, server AEC");
-    }
 
     esp_err_t result = board_audio_initialize();
     if (result != ESP_OK) {
@@ -104,8 +103,7 @@ esp_err_t AudioPipeline::start()
         return result;
     }
 
-    upstream_buffer_ = xStreamBufferCreate(
-        UPSTREAM_BUFFER_BYTES_PER_CHANNEL * upstream_channels_, 1);
+    upstream_buffer_ = xStreamBufferCreate(UPSTREAM_BUFFER_BYTES, 1);
     playback_buffer_storage_ = static_cast<uint8_t *>(heap_caps_malloc(
         PLAYBACK_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     playback_buffer_struct_ = static_cast<StaticStreamBuffer_t *>(heap_caps_calloc(
@@ -127,10 +125,10 @@ esp_err_t AudioPipeline::start()
     playback_active_ = false;
     playback_ended_ = false;
     playback_started_ = false;
+    upstream_open_tick_ = 0;
     running_ = true;
-    /* The capture frame buffers (TDM capture, mono mixdown, stereo
-     * upstream) alone are ~7 KB; 12 KB leaves room for the codec read
-     * path below them. */
+    /* The capture frame buffers (TDM capture and mono mixdown) alone are
+     * ~5 KB; 12 KB leaves room for the codec read path below them. */
     BaseType_t capture_ok = xTaskCreatePinnedToCore(
         capture_task_entry, "capture", 12288, this, 8, &capture_task_, 1);
     BaseType_t playback_ok = xTaskCreatePinnedToCore(
@@ -192,8 +190,7 @@ void AudioPipeline::stop()
 
 bool AudioPipeline::read_upstream(int16_t *pcm, TickType_t timeout)
 {
-    const size_t expected =
-        TALKNEST_PCM_FRAME_SAMPLES * upstream_channels_ * sizeof(int16_t);
+    const size_t expected = TALKNEST_PCM_FRAME_SAMPLES * sizeof(int16_t);
     TickType_t started = xTaskGetTickCount();
     while (running_ && upstream_buffer_ != nullptr) {
         if (xSemaphoreTake(upstream_mutex_, portMAX_DELAY) == pdTRUE) {
@@ -215,7 +212,8 @@ bool AudioPipeline::read_upstream(int16_t *pcm, TickType_t timeout)
 
 bool AudioPipeline::upstream_allowed() const
 {
-    return config_.full_duplex || !playback_active_;
+    return !playback_active_ &&
+           static_cast<int32_t>(xTaskGetTickCount() - upstream_open_tick_.load()) >= 0;
 }
 
 void AudioPipeline::clear_upstream()
@@ -274,9 +272,10 @@ bool AudioPipeline::cancel_playback()
     if (playback_buffer_ != nullptr) {
         drain_stream(playback_buffer_, playback_mutex_);
     }
-    if (!config_.full_duplex) {
-        clear_upstream();
+    if (was_active) {
+        upstream_open_tick_ = xTaskGetTickCount() + UPSTREAM_SETTLE;
     }
+    clear_upstream();
     return was_active;
 }
 
@@ -289,22 +288,11 @@ void AudioPipeline::capture_loop()
 {
     std::array<int16_t, TALKNEST_PCM_FRAME_SAMPLES * BOARD_AUDIO_CAPTURE_CHANNELS> captured;
     std::array<int16_t, TALKNEST_PCM_FRAME_SAMPLES> mono;
-    std::array<int16_t, TALKNEST_PCM_FRAME_SAMPLES * 2> stereo;
     while (running_) {
         esp_err_t result = board_audio_read(captured.data(), TALKNEST_PCM_FRAME_SAMPLES);
         if (result != ESP_OK) {
             ESP_LOGW(TAG, "Capture failed: %s", esp_err_to_name(result));
             vTaskDelay(pdMS_TO_TICKS(20));
-            continue;
-        }
-
-        if (config_.full_duplex) {
-            pcm_format::tdm_to_upstream_stereo(captured.data(), stereo.data(),
-                                               TALKNEST_PCM_FRAME_SAMPLES,
-                                               config_.capture_gain);
-            send_stream(upstream_buffer_, upstream_mutex_,
-                        reinterpret_cast<const uint8_t *>(stereo.data()),
-                        stereo.size() * sizeof(int16_t));
             continue;
         }
 
@@ -421,9 +409,8 @@ void AudioPipeline::finish_playback(uint32_t generation)
     }
     playback_ended_ = false;
     playback_started_ = false;
-    if (!config_.full_duplex) {
-        clear_upstream();
-    }
+    upstream_open_tick_ = xTaskGetTickCount() + UPSTREAM_SETTLE;
+    clear_upstream();
     if (playback_finished_callback_) {
         playback_finished_callback_();
     }

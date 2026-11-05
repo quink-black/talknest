@@ -167,9 +167,8 @@ void TalkNestClient::retry_next_profile()
         return;
     }
 
-    /* Keep the effective configuration intact: TF card overlays, the audio
-     * settings and full_duplex were used to initialize the running audio
-     * pipeline, whose upstream channel count cannot change at runtime.
+    /* Keep the effective configuration intact: TF card overlays and the
+     * audio settings were used to initialize the running audio pipeline.
      * Only the network identity changes with the environment. */
     profile_index_ = next_index;
     config_.wifi_ssid = next.wifi_ssid;
@@ -316,7 +315,7 @@ void TalkNestClient::manager_loop()
 
 void TalkNestClient::sender_loop()
 {
-    std::vector<int16_t> pcm(TALKNEST_PCM_FRAME_SAMPLES * 2);
+    std::vector<int16_t> pcm(TALKNEST_PCM_FRAME_SAMPLES);
     TickType_t last_ping = xTaskGetTickCount();
     while (running_) {
         if (initial_messages_pending_.exchange(false) && connected_) {
@@ -332,9 +331,8 @@ void TalkNestClient::sender_loop()
         if (!audio_.read_upstream(pcm.data(), pdMS_TO_TICKS(100))) {
             continue;
         }
-        const size_t sample_count = TALKNEST_PCM_FRAME_SAMPLES * audio_.upstream_channels();
         if (connected_ && audio_.upstream_allowed()) {
-            send_binary(pcm.data(), sample_count);
+            send_binary(pcm.data(), TALKNEST_PCM_FRAME_SAMPLES);
         }
     }
     xEventGroupSetBits(events_, SENDER_STOPPED);
@@ -362,9 +360,6 @@ void TalkNestClient::send_start()
         return;
     }
     cJSON_AddStringToObject(root, "type", "start");
-    if (config_.full_duplex) {
-        cJSON_AddNumberToObject(root, "channels", 2);
-    }
     char *serialized = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (serialized == nullptr) {

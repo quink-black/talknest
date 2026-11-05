@@ -11,7 +11,6 @@ struct AppConfig {
     std::string server_url;
     std::string mode = "kid";
     std::string learner = "default";
-    bool full_duplex = false;
     int speaker_volume = 65;
     float mic_gain_db = 24.0F;
     float capture_gain = 8.0F;

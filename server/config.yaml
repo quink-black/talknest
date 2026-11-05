@@ -107,7 +107,8 @@ vad:
   pending_barge_in_ms: 1200
 
 # Server-side echo cancellation for clients that upload [microphone,
-# playback reference] stereo -- the ESP32 terminal with full_duplex=true.
+# playback reference] stereo and declare channels=2 in "start". The ESP32
+# terminal is half duplex and uploads mono, so it does not use this.
 # The weights are the CLI client's DTLN models; without them a stereo
 # start is refused instead of letting echo through to the VAD.
 aec:

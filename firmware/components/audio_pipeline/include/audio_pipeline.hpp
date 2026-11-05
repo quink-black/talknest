@@ -19,9 +19,6 @@ struct AudioPipelineConfig {
     int speaker_volume = 65;
     float mic_gain_db = 24.0F;
     float capture_gain = 8.0F;
-    /* True streams [MIC1, playback reference] stereo upstream so the server
-     * can cancel echo; false keeps the mono half-duplex path. */
-    bool full_duplex = false;
     int playback_prebuffer_ms = 500;
 };
 
@@ -37,7 +34,9 @@ public:
     void stop();
 
     bool read_upstream(int16_t *pcm, TickType_t timeout);
-    size_t upstream_channels() const { return upstream_channels_; }
+    /* The terminal is half duplex: the microphone stays closed while a reply
+     * plays and for a short settle time after it, so the speaker never
+     * reaches the server as speech. */
     bool upstream_allowed() const;
     void clear_upstream();
 
@@ -49,7 +48,7 @@ public:
 
 private:
     static constexpr size_t PLAYBACK_BLOCK_SAMPLES = 480;
-    static constexpr size_t UPSTREAM_BUFFER_BYTES_PER_CHANNEL = 9600;
+    static constexpr size_t UPSTREAM_BUFFER_BYTES = 9600;
     /* Hold a whole turn so a slow 2.4 GHz link cannot overflow the queue. */
     static constexpr size_t PLAYBACK_BUFFER_BYTES = 1440000;
     static constexpr EventBits_t CAPTURE_STOPPED = 1U << 0;
@@ -60,7 +59,6 @@ private:
     /* Called from the playback task with the RMS of each 20 ms block.
      * The callee must only do an atomic store, never touch LVGL. */
     std::function<void(uint8_t)> playback_level_callback_;
-    size_t upstream_channels_ = 1;
     StreamBufferHandle_t upstream_buffer_ = nullptr;
     StreamBufferHandle_t playback_buffer_ = nullptr;
     StaticStreamBuffer_t *playback_buffer_struct_ = nullptr;
@@ -80,6 +78,9 @@ private:
     size_t playback_prebuffer_bytes_ = 0;
     TickType_t playback_begin_tick_ = 0;
     TickType_t last_playback_write_ = 0;
+    /* Tick at which the microphone may open again; written by the playback
+     * task and the control task, read by the sender task. */
+    std::atomic<TickType_t> upstream_open_tick_{0};
 
     void capture_loop();
     void playback_loop();

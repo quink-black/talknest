@@ -82,11 +82,7 @@ bool parse_config(cJSON *root, AppConfig &config, bool require_identity)
         ESP_LOGE(TAG, "server_url must use wss://");
     }
 
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "full_duplex");
-    if (cJSON_IsBool(item)) {
-        config.full_duplex = cJSON_IsTrue(item);
-    }
-    item = cJSON_GetObjectItemCaseSensitive(root, "speaker_volume");
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "speaker_volume");
     if (cJSON_IsNumber(item)) {
         config.speaker_volume = item->valueint;
     }

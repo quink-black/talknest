@@ -26,7 +26,6 @@ python scripts/gen_avatar_frames.py --layout-preview /tmp/screen.png
 | `wifi_ssid`、`wifi_password` | 设备使用的 Wi-Fi 凭据 |
 | `server_url` | 以 `wss://` 开头的完整 `/ws` 地址 |
 | `mode`、`learner` | 连接后发送给 TalkNest 的模式和学习者 |
-| `full_duplex` | `true` 时上行为 [麦克风, 播放回采] 双通道，由服务端 AEC 消除回声，实现语音打断；要求服务端已启用 AEC，否则连接会被拒绝 |
 | `speaker_volume`、`mic_gain_db` | 播放音量和麦克风硬件增益 |
 | `capture_gain` | 进入音频管线前的数字增益；若讲话无法触发 VAD，可逐步调高 |
 | `playback_prebuffer_ms` | 开始播放前至少积累的音频时长，默认 500 ms；越大越抗网络抖动，越小首句延迟越低 |
@@ -120,6 +119,6 @@ idf.py -p PORT monitor
 
 将 `PORT` 替换为设备的串口路径。监视器需要交互式终端；如果只需要在脚本中采集日志，可以使用 pyserial 以设备实际配置的波特率读取串口。
 
-## 交互与降级
+## 交互方式
 
-`full_duplex=false` 时，固件在回答播放期间关闭上行门控，所以语音打断不可用，但触摸打断仍然有效。`full_duplex=true` 时上行携带播放回采参考，回声消除在服务端完成；开启前应分别验证助手语音不会触发自我打断、真人插话能够停止播放，以及插话后的下一句话能被完整识别。
+终端是单工的：回答播放期间以及播放结束后的约 600 ms 内，固件不向服务器发送麦克风音频，因此助手自己的声音不会被当作用户发言。回答期间若要打断，按住屏幕约 600 ms，详见 `docs/design/esp32-s3-voice-client.md`。

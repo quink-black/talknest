@@ -122,7 +122,6 @@ extern "C" void app_main()
         .speaker_volume = config.speaker_volume,
         .mic_gain_db = config.mic_gain_db,
         .capture_gain = config.capture_gain,
-        .full_duplex = config.full_duplex,
         .playback_prebuffer_ms = config.playback_prebuffer_ms,
     };
     /* The playback task only writes an atomic envelope value here; the
