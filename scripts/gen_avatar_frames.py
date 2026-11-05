@@ -40,10 +40,12 @@ CROP = (0, 0, 318, 330)
 SIZE = (300, 311)
 BG = (16, 20, 28)  # RGB padding for alpha-edge compositing; device uses a gradient
 
-# Feature coordinates in source image pixels.
-EYES = [(98, 138, 140, 180), (180, 138, 222, 180)]
-EYE_ARCS = [(101, 150, 137, 166), (183, 150, 219, 166)]
-MOUTH = (149, 183, 169, 200)
+# Feature coordinates in source image pixels, measured on the current
+# web/whale_front.webp (left eye 96..139 x 136..169, right eye 172..210 x
+# 136..169, smile 146..170 x 176..182). Re-measure if the source changes.
+EYES = [(95, 133, 142, 175), (169, 133, 215, 175)]
+EYE_ARCS = [(99, 148, 138, 168), (173, 148, 211, 168)]
+MOUTH = (147, 175, 171, 193)
 
 FRAME_NAMES = ["idle", "talk", "blink", "blink_talk"]
 
@@ -65,7 +67,7 @@ def paint_eyes_closed(img, skin):
 def paint_mouth_open(img):
     d = ImageDraw.Draw(img)
     d.ellipse(MOUTH, fill=(122, 56, 68, 255), outline=(90, 40, 52, 255), width=2)
-    d.ellipse((154, 192, 164, 199), fill=(214, 116, 124, 255))
+    d.ellipse((152, 185, 166, 191), fill=(214, 116, 124, 255))
 
 
 def frame_bytes(img):
