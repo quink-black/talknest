@@ -50,4 +50,43 @@ struct PoseInput {
 
 Pose compute_pose(const PoseInput &in);
 
+constexpr uint32_t INTERRUPT_HOLD_MS = 600;
+constexpr int16_t TOUCH_EDGE_PX = 20;
+constexpr int16_t TOUCH_MOVE_CANCEL_PX = 24;
+
+enum class TouchEvent : uint8_t {
+    Press,
+    Move,
+    Release,
+    Tick,
+};
+
+enum class TouchResult : uint8_t {
+    None,
+    Interrupt,
+};
+
+struct TouchGesture {
+    bool active = false;
+    bool triggered = false;
+    uint32_t started_ms = 0;
+    int16_t start_x = 0;
+    int16_t start_y = 0;
+    int16_t x = 0;
+    int16_t y = 0;
+};
+
+struct TouchSample {
+    TouchEvent event;
+    int16_t x;
+    int16_t y;
+    uint32_t elapsed_ms;
+    bool enabled;
+    int16_t screen_width;
+    int16_t screen_height;
+};
+
+TouchResult update_touch_gesture(TouchGesture &gesture, const TouchSample &sample);
+uint8_t touch_progress(const TouchGesture &gesture, uint32_t elapsed_ms);
+
 } // namespace avatar_logic

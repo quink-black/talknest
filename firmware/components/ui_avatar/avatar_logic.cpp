@@ -105,4 +105,65 @@ Pose compute_pose(const PoseInput &in)
     return pose;
 }
 
+TouchResult update_touch_gesture(TouchGesture &gesture, const TouchSample &sample)
+{
+    if (sample.event == TouchEvent::Press) {
+        gesture = {};
+        gesture.x = sample.x;
+        gesture.y = sample.y;
+        const bool inside = sample.x >= TOUCH_EDGE_PX &&
+                            sample.y >= TOUCH_EDGE_PX &&
+                            sample.x < sample.screen_width - TOUCH_EDGE_PX &&
+                            sample.y < sample.screen_height - TOUCH_EDGE_PX;
+        if (!sample.enabled || !inside) {
+            return TouchResult::None;
+        }
+        gesture.active = true;
+        gesture.started_ms = sample.elapsed_ms;
+        gesture.start_x = sample.x;
+        gesture.start_y = sample.y;
+        return TouchResult::None;
+    }
+
+    if (!sample.enabled || sample.event == TouchEvent::Release) {
+        gesture.active = false;
+        gesture.triggered = false;
+        return TouchResult::None;
+    }
+    if (!gesture.active) {
+        return TouchResult::None;
+    }
+
+    gesture.x = sample.x;
+    gesture.y = sample.y;
+    const int32_t dx = static_cast<int32_t>(sample.x) - gesture.start_x;
+    const int32_t dy = static_cast<int32_t>(sample.y) - gesture.start_y;
+    if (dx * dx + dy * dy > TOUCH_MOVE_CANCEL_PX * TOUCH_MOVE_CANCEL_PX) {
+        gesture.active = false;
+        return TouchResult::None;
+    }
+    if (sample.elapsed_ms - gesture.started_ms < INTERRUPT_HOLD_MS) {
+        return TouchResult::None;
+    }
+
+    gesture.active = false;
+    gesture.triggered = true;
+    return TouchResult::Interrupt;
+}
+
+uint8_t touch_progress(const TouchGesture &gesture, uint32_t elapsed_ms)
+{
+    if (gesture.triggered) {
+        return 255;
+    }
+    if (!gesture.active) {
+        return 0;
+    }
+    const uint32_t elapsed = elapsed_ms - gesture.started_ms;
+    if (elapsed >= INTERRUPT_HOLD_MS) {
+        return 255;
+    }
+    return static_cast<uint8_t>(elapsed * 255 / INTERRUPT_HOLD_MS);
+}
+
 } // namespace avatar_logic

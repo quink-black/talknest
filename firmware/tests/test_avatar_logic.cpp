@@ -7,6 +7,12 @@
 
 using namespace avatar_logic;
 
+TouchSample touch(TouchEvent event, int16_t x, int16_t y, uint32_t elapsed_ms,
+                  bool enabled = true)
+{
+    return {event, x, y, elapsed_ms, enabled, 410, 502};
+}
+
 int main()
 {
     // State parsing covers the wire values, the client's own connection
@@ -57,6 +63,60 @@ int main()
         Pose p = compute_pose({State::Idle, 0, ms});
         assert(p.scale_y >= 256 && p.scale_y <= 280);
     }
+
+    TouchGesture gesture;
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Press, 100, 100, 0)) ==
+           TouchResult::None);
+    assert(gesture.active);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Tick, 100, 100, 300)) ==
+           TouchResult::None);
+    assert(touch_progress(gesture, 300) > 120 && touch_progress(gesture, 300) < 135);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Tick, 100, 100, 599)) ==
+           TouchResult::None);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Tick, 100, 100, 600)) ==
+           TouchResult::Interrupt);
+    assert(!gesture.active && gesture.triggered);
+    assert(touch_progress(gesture, 600) == 255);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Tick, 100, 100, 601)) ==
+           TouchResult::None);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Release, 100, 100, 650)) ==
+           TouchResult::None);
+    assert(touch_progress(gesture, 650) == 0);
+
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Press, 100, 100, 1000)) ==
+           TouchResult::None);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Release, 100, 100, 1599)) ==
+           TouchResult::None);
+    assert(!gesture.active && !gesture.triggered);
+
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Press, 100, 100, 2000)) ==
+           TouchResult::None);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Move, 124, 100, 2100)) ==
+           TouchResult::None);
+    assert(gesture.active);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Move, 125, 100, 2200)) ==
+           TouchResult::None);
+    assert(!gesture.active);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Tick, 125, 100, 2600)) ==
+           TouchResult::None);
+
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Press, 19, 100, 3000)) ==
+           TouchResult::None);
+    assert(!gesture.active);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Press, 20, 20, 3000)) ==
+           TouchResult::None);
+    assert(gesture.active);
+    assert(update_touch_gesture(gesture,
+                                touch(TouchEvent::Tick, 20, 20, 3600, false)) ==
+           TouchResult::None);
+    assert(!gesture.active);
+    assert(update_touch_gesture(gesture, touch(TouchEvent::Press, 390, 100, 4000)) ==
+           TouchResult::None);
+    assert(!gesture.active);
+    assert(update_touch_gesture(gesture,
+                                touch(TouchEvent::Press, 100, 100, 4000, false)) ==
+           TouchResult::None);
+    assert(!gesture.active);
 
     std::cout << "avatar_logic tests passed" << std::endl;
     return 0;

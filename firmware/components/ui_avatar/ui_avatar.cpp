@@ -104,6 +104,22 @@ esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback)
     lv_obj_set_style_radius(stage, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_align(stage, LV_ALIGN_CENTER, 0, 143);
 
+    for (lv_obj_t *&ripple : ripples_) {
+        ripple = create_shape(screen, 160, 48, HINT_COLOR, LV_OPA_TRANSP);
+        lv_obj_set_style_radius(ripple, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_border_width(ripple, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(ripple, lv_color_hex(HINT_COLOR),
+                                      LV_PART_MAIN);
+        lv_obj_align(ripple, LV_ALIGN_CENTER, 0, 143);
+        lv_obj_set_hidden(ripple, true);
+    }
+    touch_ripple_ = create_shape(screen, 32, 32, HINT_COLOR, LV_OPA_TRANSP);
+    lv_obj_set_style_radius(touch_ripple_, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_border_width(touch_ripple_, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(touch_ripple_, lv_color_hex(HINT_COLOR),
+                                  LV_PART_MAIN);
+    lv_obj_set_hidden(touch_ripple_, true);
+
     // Static ambient shapes keep idle animation cost with the character.
     constexpr int bubbles[][4] = {
         {30, 142, 8, 45}, {374, 178, 6, 40}, {24, 286, 5, 35},
@@ -189,6 +205,10 @@ esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback)
     lv_obj_set_style_pad_all(touch_layer_, 0, LV_PART_MAIN);
     lv_obj_align(touch_layer_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_move_foreground(touch_layer_);
+    lv_obj_add_event_cb(touch_layer_, on_screen_touch, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(touch_layer_, on_screen_touch, LV_EVENT_PRESSING, this);
+    lv_obj_add_event_cb(touch_layer_, on_screen_touch, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(touch_layer_, on_screen_touch, LV_EVENT_PRESS_LOST, this);
     lv_obj_add_event_cb(touch_layer_, on_screen_clicked, LV_EVENT_CLICKED, this);
 
     now_ms_ = lv_tick_get();
@@ -254,7 +274,17 @@ void UiAvatar::apply_events()
                      std::memory_order_relaxed);
         state = avatar_logic::State::Listening;
     }
-    can_interrupt_ = state == avatar_logic::State::Speaking;
+    // The server can return to listening while the device still drains its
+    // playback buffer, so the actual playback flag must extend the gesture
+    // window beyond the speaking state.
+    const bool interrupt_window = state == avatar_logic::State::Thinking ||
+                                  state == avatar_logic::State::Speaking ||
+                                  playing_.load(std::memory_order_relaxed);
+    if (!interrupt_window) {
+        interrupt_latched_ = false;
+    }
+    can_interrupt_ = interrupt_window && !interrupt_latched_;
+    update_gesture(avatar_logic::TouchEvent::Tick, gesture_.x, gesture_.y);
 
     if (error_pending_.exchange(false, std::memory_order_acquire)) {
         lv_label_set_text(message_label_, error_text_);
@@ -271,6 +301,7 @@ void UiAvatar::apply_events()
     if (visible_state_ != static_cast<int>(state)) {
         apply_state(state);
     }
+    lv_obj_set_hidden(hint_label_, interrupt_window || message_until_ms_ != 0);
 }
 
 void UiAvatar::apply_state(avatar_logic::State state)
@@ -287,12 +318,12 @@ void UiAvatar::apply_state(avatar_logic::State state)
         break;
     case avatar_logic::State::Thinking:
         status = "THINKING";
-        hint = "One moment...";
+        hint = "";
         color = 0xFFBF69;
         break;
     case avatar_logic::State::Speaking:
         status = "SPEAKING";
-        hint = "Tap to stop";
+        hint = "";
         color = 0xC5B5FF;
         break;
     case avatar_logic::State::Hearing:
@@ -320,6 +351,10 @@ void UiAvatar::apply_state(avatar_logic::State state)
     for (lv_obj_t *obj : activity_) {
         lv_obj_set_style_bg_color(obj, lv_color_hex(color), LV_PART_MAIN);
     }
+    for (lv_obj_t *obj : ripples_) {
+        lv_obj_set_style_border_color(obj, lv_color_hex(color), LV_PART_MAIN);
+    }
+    lv_obj_set_style_border_color(touch_ripple_, lv_color_hex(color), LV_PART_MAIN);
     last_activity_ms_ = now_ms_ - ACTIVITY_MS;
 }
 
@@ -354,9 +389,67 @@ void UiAvatar::apply_activity(avatar_logic::State state, uint8_t rms)
         break;
     }
 
+    const uint8_t progress = avatar_logic::touch_progress(gesture_, now_ms_);
+    if (interrupt_latched_) {
+        heights[0] = heights[1] = heights[2] = 8;
+        opacities[0] = opacities[1] = opacities[2] = LV_OPA_60;
+    } else if (progress > 0) {
+        for (int i = 0; i < 3; ++i) {
+            heights[i] = 8 + (heights[i] - 8) * (255 - progress) / 255;
+        }
+    }
+
     for (int i = 0; i < 3; ++i) {
         lv_obj_set_height(activity_[i], heights[i]);
         lv_obj_set_style_bg_opa(activity_[i], opacities[i], LV_PART_MAIN);
+    }
+}
+
+void UiAvatar::apply_ripples(uint8_t rms)
+{
+    if (!can_interrupt_) {
+        for (lv_obj_t *obj : ripples_) {
+            lv_obj_set_hidden(obj, true);
+        }
+        lv_obj_set_hidden(touch_ripple_, true);
+        return;
+    }
+
+    const uint8_t gesture = avatar_logic::touch_progress(gesture_, now_ms_);
+    const uint32_t demo_phase = now_ms_ % 2400;
+    const uint8_t demo = gesture_.active || demo_phase < 1900 ? 0 :
+        static_cast<uint8_t>((demo_phase - 1900) * 255 / 500);
+    const uint8_t contract = gesture > demo ? gesture : demo;
+    for (int i = 0; i < 3; ++i) {
+        const int phase = static_cast<int>((now_ms_ / 12 + i * 67) % 200);
+        const int expanded_w = 150 + phase + rms / 16;
+        const int expanded_h = 48 + phase / 3;
+        const int width = expanded_w - (expanded_w - 90) * contract / 255;
+        const int height = expanded_h - (expanded_h - 30) * contract / 255;
+        const int opacity = 20 + (200 - phase) * 50 / 200;
+        lv_obj_set_size(ripples_[i], width, height);
+        lv_obj_set_style_border_opa(ripples_[i],
+                                    static_cast<lv_opa_t>(opacity), LV_PART_MAIN);
+        lv_obj_align(ripples_[i], LV_ALIGN_CENTER, 0, 143);
+        lv_obj_set_hidden(ripples_[i], false);
+    }
+
+    if (gesture_.active || gesture_.triggered) {
+        const int size = 32 - 20 * gesture / 255;
+        lv_obj_set_size(touch_ripple_, size, size);
+        lv_obj_set_pos(touch_ripple_, gesture_.x - size / 2, gesture_.y - size / 2);
+        lv_obj_set_style_border_opa(touch_ripple_, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_hidden(touch_ripple_, false);
+    } else if (demo > 0) {
+        const int size = 30 - 16 * demo / 255;
+        lv_obj_set_size(touch_ripple_, size, size);
+        lv_obj_align(touch_ripple_, LV_ALIGN_CENTER, 0, 143);
+        lv_obj_set_style_border_opa(touch_ripple_,
+                                    static_cast<lv_opa_t>(90 - demo * 50 / 255),
+                                    LV_PART_MAIN);
+        lv_obj_set_hidden(touch_ripple_, false);
+    } else {
+        lv_obj_set_hidden(touch_ripple_, true);
     }
 }
 
@@ -409,11 +502,13 @@ void UiAvatar::on_timer(lv_timer_t *timer)
         self->last_envelope_ms_ = self->now_ms_;
     }
     const bool fresh = self->now_ms_ - self->last_envelope_ms_ < ENVELOPE_TIMEOUT_MS;
-    const bool playing = self->playing_.load(std::memory_order_relaxed) && fresh;
+    const bool playing = self->playing_.load(std::memory_order_relaxed) && fresh &&
+                         !self->interrupt_latched_;
     const uint8_t rms = playing ?
         self->envelope_.load(std::memory_order_relaxed) : 0;
     const avatar_logic::State state = load_state(self->state_);
     self->apply_activity(state, rms);
+    self->apply_ripples(rms);
 
     const bool blinking = self->now_ms_ >= self->blink_at_ms_ &&
                           self->now_ms_ < self->blink_at_ms_ + BLINK_MS;
@@ -431,17 +526,56 @@ void UiAvatar::on_timer(lv_timer_t *timer)
     bsp_display_unlock();
 }
 
+void UiAvatar::update_gesture(avatar_logic::TouchEvent event, int16_t x, int16_t y)
+{
+    const avatar_logic::TouchSample sample = {
+        event, x, y, now_ms_, can_interrupt_, SCREEN_W, SCREEN_H,
+    };
+    if (avatar_logic::update_touch_gesture(gesture_, sample) !=
+        avatar_logic::TouchResult::Interrupt) {
+        return;
+    }
+
+    interrupt_latched_ = true;
+    can_interrupt_ = false;
+    tap_until_ms_ = now_ms_ + TAP_MS;
+    if (interrupt_callback_) {
+        interrupt_callback_();
+    }
+}
+
+void UiAvatar::on_screen_touch(lv_event_t *event)
+{
+    auto *self = static_cast<UiAvatar *>(lv_event_get_user_data(event));
+    lv_indev_t *indev = lv_event_get_indev(event);
+    if (self == nullptr || indev == nullptr) {
+        return;
+    }
+
+    lv_point_t point;
+    lv_indev_get_point(indev, &point);
+    avatar_logic::TouchEvent type = avatar_logic::TouchEvent::Move;
+    switch (lv_event_get_code(event)) {
+    case LV_EVENT_PRESSED:
+        type = avatar_logic::TouchEvent::Press;
+        break;
+    case LV_EVENT_RELEASED:
+    case LV_EVENT_PRESS_LOST:
+        type = avatar_logic::TouchEvent::Release;
+        break;
+    case LV_EVENT_PRESSING:
+    default:
+        break;
+    }
+    self->update_gesture(type, point.x, point.y);
+}
+
 void UiAvatar::on_screen_clicked(lv_event_t *event)
 {
     auto *self = static_cast<UiAvatar *>(lv_event_get_user_data(event));
-    if (self == nullptr) {
+    if (self == nullptr || self->interrupt_latched_) {
         return;
     }
-    if (self->can_interrupt_ && self->interrupt_callback_) {
-        self->interrupt_callback_();
-        return;
-    }
-    // Non-speaking tap: a brief bounce on the character itself.
     self->tap_until_ms_ = self->now_ms_ + TAP_MS;
 }
 
@@ -455,6 +589,9 @@ void UiAvatar::suspend()
     if (BSP_LCD_TOUCH_INT >= 0) {
         gpio_intr_disable(static_cast<gpio_num_t>(BSP_LCD_TOUCH_INT));
     }
+    gesture_ = {};
+    interrupt_latched_ = false;
+    can_interrupt_ = false;
     lvgl_port_stop();
 }
 
