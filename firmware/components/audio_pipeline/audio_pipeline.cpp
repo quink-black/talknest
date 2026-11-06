@@ -235,11 +235,15 @@ void AudioPipeline::begin_playback(uint32_t source_sample_rate)
     if (playback_active_) {
         finish_playback(playback_generation_.load());
     }
+    // Invalidate a block the playback task may already have dequeued before
+    // resetting the counter, so its late fetch_add cannot land on this stream.
+    playback_generation_++;
+    // Reset after finish_playback, whose callback reads the old position.
+    played_samples_.store(0);
     drain_stream(playback_buffer_, playback_mutex_);
     playback_sample_rate_ = source_sample_rate;
     playback_ended_ = false;
     playback_started_ = false;
-    playback_generation_++;
     playback_active_ = true;
     playback_begin_tick_ = xTaskGetTickCount();
     last_playback_write_ = playback_begin_tick_;
@@ -282,6 +286,16 @@ bool AudioPipeline::cancel_playback()
 bool AudioPipeline::playback_active() const
 {
     return playback_active_;
+}
+
+uint32_t AudioPipeline::playback_position_ms() const
+{
+    const uint32_t rate = playback_sample_rate_.load();
+    if (rate == 0) {
+        return 0;
+    }
+    const uint64_t samples = played_samples_.load();
+    return static_cast<uint32_t>(samples * 1000ULL / rate);
 }
 
 void AudioPipeline::capture_loop()
@@ -338,10 +352,16 @@ void AudioPipeline::playback_loop()
             received = xStreamBufferReceive(playback_buffer_, mono.data(), requested, 0);
             xSemaphoreGive(playback_mutex_);
         }
+        if (generation != playback_generation_.load()) {
+            // A new stream began while this block was being dequeued. It
+            // belongs to the old stream: neither play nor count it.
+            continue;
+        }
         if (received < block_bytes) {
             std::memset(mono.data() + received / sizeof(int16_t), 0, block_bytes - received);
         }
         if (received > 0) {
+            played_samples_.fetch_add(received / sizeof(int16_t));
             if (!playback_started_) {
                 TickType_t waited = xTaskGetTickCount() - playback_begin_tick_;
                 ESP_LOGI(TAG, "First playback block after %lu ms",

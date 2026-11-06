@@ -45,6 +45,10 @@ public:
     void end_playback();
     bool cancel_playback();
     bool playback_active() const;
+    /* Mono samples actually written to the speaker since begin_playback.
+     * Zero padding that covers an underrun is not source audio and is not
+     * counted, so the value maps back to a position in the stream. */
+    uint32_t playback_position_ms() const;
 
 private:
     static constexpr size_t PLAYBACK_BLOCK_SAMPLES = 480;
@@ -75,6 +79,7 @@ private:
     std::atomic<bool> playback_started_{false};
     std::atomic<uint32_t> playback_sample_rate_{BOARD_AUDIO_SAMPLE_RATE};
     std::atomic<uint32_t> playback_generation_{0};
+    std::atomic<uint64_t> played_samples_{0};
     size_t playback_prebuffer_bytes_ = 0;
     TickType_t playback_begin_tick_ = 0;
     TickType_t last_playback_write_ = 0;

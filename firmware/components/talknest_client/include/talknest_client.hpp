@@ -52,6 +52,12 @@ private:
     std::atomic<bool> connected_{false};
     std::atomic<bool> initial_messages_pending_{false};
     std::atomic<bool> playback_ended_pending_{false};
+    /* audio_start from the server may name a textbook stream; the id is
+     * echoed back with the position so a late report cannot be applied to
+     * a different stream. 0 means an ordinary TTS reply. */
+    std::atomic<uint32_t> playback_id_{0};
+    std::atomic<uint32_t> playback_ended_position_ms_{0};
+    std::atomic<uint32_t> playback_ended_id_{0};
     bool wifi_started_ = false;
     /* Kept so a Wi-Fi timeout can try the next environment without a
      * reflash. profiles_[0] is always the default profile. */
@@ -69,6 +75,7 @@ private:
     void send_initial_messages();
     void send_start();
     void send_json(const char *type, const char *value = nullptr);
+    void send_playback_ended(uint32_t position_ms, uint32_t playback_id);
     void send_binary(const int16_t *pcm, size_t sample_count);
     void handle_text(const char *data, size_t length);
     void handle_data(esp_websocket_event_data_t *data);
