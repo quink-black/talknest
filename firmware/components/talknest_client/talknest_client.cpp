@@ -322,7 +322,8 @@ void TalkNestClient::sender_loop()
             send_initial_messages();
         }
         if (playback_ended_pending_.exchange(false) && connected_) {
-            send_json("playback", "ended");
+            send_playback_ended(playback_ended_position_ms_.load(),
+                                playback_ended_id_.load());
         }
         if (xTaskGetTickCount() - last_ping >= pdMS_TO_TICKS(15000)) {
             send_json("ping");
@@ -346,6 +347,7 @@ void TalkNestClient::send_initial_messages()
     binary_message_.clear();
     audio_.clear_upstream();
     audio_.cancel_playback();
+    playback_id_.store(0);
     send_json("mode", config_.mode.c_str());
     if (!config_.learner.empty()) {
         send_json("learner", config_.learner.c_str());
@@ -404,6 +406,40 @@ void TalkNestClient::send_json(const char *type, const char *value)
     cJSON_free(serialized);
 }
 
+void TalkNestClient::send_playback_ended(uint32_t position_ms,
+                                         uint32_t playback_id)
+{
+    if (!connected_) {
+        return;
+    }
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "type", "playback");
+    cJSON_AddStringToObject(root, "value", "ended");
+    // Only a textbook stream carries a playback_id. Its exact position is
+    // what lets the server resume from the point the child actually heard.
+    if (playback_id != 0) {
+        cJSON_AddNumberToObject(root, "position_ms", position_ms);
+        cJSON_AddNumberToObject(root, "playback_id", playback_id);
+    }
+    char *serialized = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (serialized == nullptr) {
+        return;
+    }
+    if (xSemaphoreTake(send_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (websocket_ != nullptr) {
+            esp_websocket_client_send_text(websocket_, serialized,
+                                           std::strlen(serialized),
+                                           pdMS_TO_TICKS(1000));
+        }
+        xSemaphoreGive(send_mutex_);
+    }
+    cJSON_free(serialized);
+}
+
 void TalkNestClient::send_binary(const int16_t *pcm, size_t sample_count)
 {
     if (!connected_) {
@@ -427,10 +463,12 @@ void TalkNestClient::interrupt()
 
 void TalkNestClient::playback_finished()
 {
-    // Called from the playback task (prio 9). Only set a flag; the sender
+    // Called from the playback task (prio 9). Only store atomics; the sender
     // task does the network send so the audio task never blocks on a lock.
     ui_.on_audio_end();
-    playback_ended_pending_.store(true, std::memory_order_relaxed);
+    playback_ended_position_ms_.store(audio_.playback_position_ms());
+    playback_ended_id_.store(playback_id_.load());
+    playback_ended_pending_.store(true, std::memory_order_release);
 }
 
 void TalkNestClient::handle_text(const char *data, size_t length)
@@ -450,13 +488,19 @@ void TalkNestClient::handle_text(const char *data, size_t length)
     } else if (std::strcmp(type, "audio_start") == 0) {
         const cJSON *rate = cJSON_GetObjectItemCaseSensitive(root, "sample_rate");
         uint32_t sample_rate = cJSON_IsNumber(rate) ? static_cast<uint32_t>(rate->valueint) : 24000;
+        const cJSON *pid = cJSON_GetObjectItemCaseSensitive(root, "playback_id");
+        uint32_t playback_id = cJSON_IsNumber(pid) ? static_cast<uint32_t>(pid->valueint) : 0;
+        // begin_playback may finish an earlier stream, whose callback must
+        // still see the old id, so store the new one afterwards.
         audio_.begin_playback(sample_rate);
+        playback_id_.store(playback_id);
         ui_.on_audio_start();
     } else if (std::strcmp(type, "audio_end") == 0) {
         audio_.end_playback();
     } else if (std::strcmp(type, "stop_playback") == 0) {
         if (audio_.cancel_playback()) {
-            send_json("playback", "ended");
+            send_playback_ended(audio_.playback_position_ms(),
+                                playback_id_.load());
         }
         ui_.on_audio_end();
     } else if (std::strcmp(type, "error") == 0 || std::strcmp(type, "tts_error") == 0) {
@@ -516,6 +560,8 @@ void TalkNestClient::websocket_event(void *, esp_event_base_t, int32_t id, void 
     case WEBSOCKET_EVENT_DISCONNECTED:
         connected_ = false;
         initial_messages_pending_ = false;
+        playback_id_.store(0);
+        playback_ended_pending_.store(false);
         audio_.cancel_playback();
         audio_.clear_upstream();
         ui_.set_state("Reconnecting");

@@ -169,6 +169,19 @@ teaching:
   # this many messages, instead of being dropped on the floor.
   compact_messages: 8
 
+# Local textbook audio. Every directory in dirs is scanned and given a
+# generated index describing its units (unit number, title, filename,
+# duration); playback resumes from the position kept in the learner's
+# store, so nothing is written next to the audio except that index.
+# Add another "- <path>" line to make a second book available. ${...}
+# expands from the environment on load, so a machine-specific library can
+# use ${HOME} without putting a username in the repository.
+textbook:
+  dirs:
+    - ${HOME}/work/english/小学英语一年级-上海/一年级上-网盘
+  index_file: .talknest-index.json
+  sample_rate: 24000    # mono int16 PCM; must match the device's I2S rate
+
 # Default conversation mode for a new session; the client can switch at
 # any time (per-session, effective on the next turn). Modes below are
 # free-form: each key is a mode name with its own system_prompt and

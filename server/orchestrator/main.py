@@ -31,8 +31,9 @@ from starlette.websockets import WebSocketState
 
 from .asr import ASRClient, DEFAULT_LANGUAGES
 from .config import data_root, load, model_root
-from .llm import LLMClient
+from .llm import LLMClient, ToolCall
 from . import speaker
+from . import textbook
 from .teaching import (curriculum, digest, match, profile, readback,
                        scheduler, state_block)
 from .teaching.store import MASTERY_BOX, Store
@@ -42,6 +43,12 @@ from .vad import SileroVAD, StreamVAD
 cfg = load()
 app = FastAPI(title="talknest-orchestrator")
 log = logging.getLogger(__name__)
+
+# Local textbook audio. The directory index is built on the first playback
+# request, so importing this module never writes into the audio directories.
+TEXTBOOK = textbook.TextbookLibrary(cfg)
+TEXTBOOK_TOOLS = ([textbook.tool_definition(TEXTBOOK.books())]
+                  if TEXTBOOK.enabled else [])
 
 
 @app.on_event("startup")
@@ -293,6 +300,10 @@ class Session:
         self.cancel: asyncio.Event | None = None
         self.speaking = False      # audio is on its way to the client
         self.speaking_since = 0.0
+        # Current or just-ended textbook playback, kept until the device
+        # reports where it stopped so the exact position can be saved.
+        self.textbook = None
+        self.playback_seq = 0
         # Stereo-upstream sessions cancel echo in this worker thread before
         # their audio reaches self.q; None on mono clients.
         self.aec = None
@@ -654,6 +665,26 @@ def note_invitation(sess: Session, reply: str) -> None:
     sess.read_target, sess.read_verdict = "", ""
 
 
+# Prepended, not appended: the tutor prompts end with "output plain text
+# only", which otherwise wins and the model answers in words instead of
+# calling the tool. Measured on the local 9B backend, the leading rule makes
+# "播放课文第3单元" produce a tool call on every trial.
+TEXTBOOK_RULE = (
+    "【最高优先级规则】当用户想听教材课文音频、想继续听上次没听完的课文、"
+    "想从头重听某单元，或想停止播放时，必须调用 play_textbook 工具，"
+    "并且不输出任何文字；本条覆盖下面所有对话规则。"
+    "其余情况忽略本条，按下面的规则正常对话。\n\n"
+)
+
+
+def system_prompt(sess: Session) -> str:
+    """Mode rules with the playback tool rule taking precedence."""
+    prompt = sess.system_prompt()
+    if TEXTBOOK.enabled:
+        prompt = TEXTBOOK_RULE + prompt
+    return prompt
+
+
 def build_messages(sess: Session, text: str,
                    who: str | None = None) -> list[dict]:
     """Prompt for one turn: stable rules, then history, then the plan.
@@ -667,7 +698,7 @@ def build_messages(sess: Session, text: str,
         # No plan for a parent: the plan is for the child's next turn, and
         # an empty one keeps this turn from crediting any word as taught.
         sess.plan = state_block.Plan()
-        return ([{"role": "system", "content": sess.system_prompt()}]
+        return ([{"role": "system", "content": system_prompt(sess)}]
                 + sess.history[-history_messages():]
                 + [{"role": "user", "content": PARENT_PREFIX + text}])
     plan = state_block.Plan()
@@ -682,7 +713,7 @@ def build_messages(sess: Session, text: str,
         plan = judge_reading(sess, plan, text)
     sess.plan = plan   # the turn's bookkeeping credits what was asked for
     block = state_block.render(plan, BLOCK_CAPS)
-    messages = [{"role": "system", "content": sess.system_prompt()}]
+    messages = [{"role": "system", "content": system_prompt(sess)}]
     messages += sess.history[-history_messages():]
     messages.append(
         {"role": "user", "content": f"{block}\n\n{text}" if block else text})
@@ -711,6 +742,85 @@ async def hear(sess: Session, pcm24: np.ndarray) -> tuple[str, str | None]:
     return text, who
 
 
+def llm_stream(messages: list[dict], cancel: asyncio.Event):
+    """Stream one turn, asking for playback tools only when they are on.
+
+    A client without tool support (a test double, or a backend that does
+    not implement them) gets the original call with no ``tools`` keyword,
+    so an ordinary conversation is unaffected.
+    """
+    client = llm_client()
+    if TEXTBOOK_TOOLS and getattr(client, "supports_tools", False):
+        return client.stream_chat(messages, cancel=cancel, tools=TEXTBOOK_TOOLS)
+    return client.stream_chat(messages, cancel=cancel)
+
+
+async def speak_textbook_line(ws, queue, worker, line: str):
+    """Say one short line through the turn's TTS worker and drain it."""
+    queue.put_nowait(line)
+    queue.put_nowait(None)
+    await worker
+
+
+async def dispatch_textbook_tool(ws, sess: Session, queue, worker, marks,
+                                 call: ToolCall) -> None:
+    """Carry out the model's play_textbook call.
+
+    The model decides the action and infers the unit number from the whole
+    utterance; this function only maps that decision onto a file, an offset
+    and the existing audio-stream messages.
+    """
+    # A cold index runs ffprobe over every file; keep that blocking work off
+    # the event loop so it cannot stall other sessions' audio streams.
+    await asyncio.to_thread(TEXTBOOK.refresh)
+    args = call.arguments or {}
+    action = str(args.get("action", "play")).lower()
+    if action not in ("play", "resume", "restart", "stop"):
+        action = "play"
+    unit = args.get("unit")
+    if isinstance(unit, str):
+        found = re.search(r"\d+", unit)
+        unit = int(found.group()) if found else None
+    if isinstance(unit, bool) or not isinstance(unit, int) or unit < 0:
+        unit = None
+    book = args.get("book")
+    book = book.strip() if isinstance(book, str) and book.strip() else None
+
+    if action == "stop":
+        if sess.textbook is not None:
+            await sess.textbook.stop()
+            await send_json(ws, {"type": "stop_playback", "reason": "manual"})
+        await send_json(ws, {"type": "reply_done", "marks": marks})
+        return
+
+    if action == "resume":
+        entry = textbook.progress_last(sess.store, TEXTBOOK)
+        if entry is None:
+            await speak_textbook_line(ws, queue, worker, "上次没有听完的课文哦。")
+            await send_json(ws, {"type": "reply_done", "marks": marks})
+            return
+        start_ms = textbook.progress_position(sess.store, entry)
+    else:
+        entry = TEXTBOOK.resolve(unit, book)
+        if entry is None:
+            await speak_textbook_line(ws, queue, worker,
+                                      "没有找到这个单元的课文哦。")
+            await send_json(ws, {"type": "reply_done", "marks": marks})
+            return
+        start_ms = 0
+        if action == "restart":
+            textbook.progress_record(sess.store, entry, 0)
+
+    if sess.textbook is not None:
+        await sess.textbook.stop()
+    sess.playback_seq += 1
+    sess.textbook = textbook.TextbookPlayback(
+        ws, send_json, sess, sess.store, TEXTBOOK, entry, start_ms,
+        sess.playback_seq)
+    sess.textbook.start()
+    await send_json(ws, {"type": "reply_done", "marks": marks})
+
+
 async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
                            cancel: asyncio.Event):
     t0 = time.perf_counter()
@@ -735,10 +845,14 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         await send_json(ws, {"type": "state", "value": "thinking"})
         reply_parts, sent_start = [], 0
         stopped_at = None   # reply text up to the request to repeat
+        tool_calls: list[ToolCall] = []
 
-        async for delta in llm_client().stream_chat(messages, cancel=cancel):
+        async for delta in llm_stream(messages, cancel):
             if cancel.is_set():
                 break
+            if isinstance(delta, ToolCall):
+                tool_calls.append(delta)
+                continue
             reply_parts.append(delta)
             cleaned = THINK_RE.sub("", "".join(reply_parts))
             # A request to repeat is the end of the turn: the child has to
@@ -760,6 +874,10 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
         if cancel.is_set():
             sess.awaiting = ""
             await send_json(ws, {"type": "interrupted"})
+            return
+        if tool_calls:
+            await dispatch_textbook_tool(ws, sess, queue, worker, marks,
+                                         tool_calls[0])
             return
 
         reply = (stopped_at if stopped_at is not None
@@ -809,7 +927,10 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
                 task = asyncio.create_task(compact_history(sess))
                 task.add_done_callback(
                     lambda _: setattr(sess, "compacting", False))
-        if not cancel.is_set():
+        # A textbook stream is still speaking: leave the state alone until
+        # the device reports that playback ended.
+        if not cancel.is_set() and (sess.textbook is None
+                                    or not sess.textbook.active):
             await send_json(ws, {"type": "state", "value": "listening"})
 
 
@@ -872,6 +993,10 @@ async def cancel_turn(sess: Session):
     """
     sess.speaking = False
     sess.busy = False
+    # Keep the playback object: the device's playback:ended reply still
+    # carries the exact position, which is more accurate than ours.
+    if sess.textbook is not None:
+        await sess.textbook.stop()
     if sess.cancel:
         sess.cancel.set()
     task = sess.turn_task
@@ -1073,6 +1198,21 @@ async def ws_endpoint(ws: WebSocket):
                 elif mtype == "playback":
                     if data.get("value") == "ended":
                         sess.speaking = False
+                        playback = sess.textbook
+                        if playback is not None:
+                            reported = data.get("position_ms")
+                            pid = data.get("playback_id")
+                            if (isinstance(reported, (int, float))
+                                    and not isinstance(reported, bool)
+                                    and reported >= 0
+                                    and pid == playback.playback_id):
+                                playback.refine(int(reported))
+                            # A reply for another stream (a new playback has
+                            # begun) must not clear the current one.
+                            if pid is None or pid == playback.playback_id:
+                                sess.textbook = None
+                                await send_json(ws, {"type": "state",
+                                                     "value": "listening"})
                         schedule_nudge(ws, sess)
                 elif mtype == "ping":
                     await send_json(ws, {"type": "pong"})
