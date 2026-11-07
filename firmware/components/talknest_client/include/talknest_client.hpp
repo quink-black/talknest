@@ -52,6 +52,12 @@ private:
     std::atomic<bool> connected_{false};
     std::atomic<bool> initial_messages_pending_{false};
     std::atomic<bool> playback_ended_pending_{false};
+    /* A terminated transport is not always reported as DISCONNECTED, so a
+     * dead link can leave connected_ true and the UI frozen on the last
+     * state. Microphone audio is written continuously, so a run of failed
+     * writes is the earliest signal and costs no extra traffic; it asks the
+     * manager to rebuild the client. */
+    std::atomic<bool> reconnect_requested_{false};
     /* audio_start from the server may name a textbook stream; the id is
      * echoed back with the position so a late report cannot be applied to
      * a different stream. 0 means an ordinary TTS reply. */
@@ -76,7 +82,7 @@ private:
     void send_start();
     void send_json(const char *type, const char *value = nullptr);
     void send_playback_ended(uint32_t position_ms, uint32_t playback_id);
-    void send_binary(const int16_t *pcm, size_t sample_count);
+    bool send_binary(const int16_t *pcm, size_t sample_count);
     void handle_text(const char *data, size_t length);
     void handle_data(esp_websocket_event_data_t *data);
     void websocket_event(void *event_argument, esp_event_base_t base, int32_t id, void *event_data);

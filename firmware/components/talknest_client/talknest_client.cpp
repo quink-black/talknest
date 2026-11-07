@@ -16,6 +16,11 @@ namespace {
 constexpr char TAG[] = "talknest";
 constexpr uint32_t WIFI_WAIT_MS = 20000;
 constexpr uint32_t TIME_WAIT_MS = 15000;
+/* Consecutive failed upstream writes before the link is treated as dead.
+ * A single timeout can come from a full send buffer on a slow moment; the
+ * device writes a 20 ms frame about 50 times a second, so this is a fraction
+ * of a second of real silence. */
+constexpr uint32_t SEND_FAILURES_BEFORE_RECONNECT = 20;
 }
 
 TalkNestClient::TalkNestClient(const AppConfig &config, AudioPipeline &audio, UiAvatar &ui)
@@ -276,6 +281,11 @@ void TalkNestClient::manager_loop()
         websocket_config.network_timeout_ms = 10000;
         websocket_config.reconnect_timeout_ms = 3000;
         websocket_config.disable_auto_reconnect = false;
+        /* The protocol PING already runs every 10 s, so a shorter PONG
+         * deadline adds no traffic; it only bounds how long a peer that
+         * still acknowledges TCP but stopped answering can hold the UI on a
+         * stale state. */
+        websocket_config.pingpong_timeout_sec = 45;
         websocket_ = esp_websocket_client_init(&websocket_config);
         if (websocket_ == nullptr) {
             ESP_LOGE(TAG, "WebSocket initialization failed");
@@ -290,10 +300,14 @@ void TalkNestClient::manager_loop()
             ui_.set_error("TLS connect failed");
         }
         while (result == ESP_OK && running_ &&
-               (xEventGroupGetBits(events_) & WIFI_CONNECTED) != 0) {
+               (xEventGroupGetBits(events_) & WIFI_CONNECTED) != 0 &&
+               !reconnect_requested_.load()) {
             vTaskDelay(pdMS_TO_TICKS(250));
         }
         connected_ = false;
+        if (reconnect_requested_.exchange(false)) {
+            ui_.set_state("Reconnecting");
+        }
         esp_websocket_client_handle_t old_websocket = websocket_;
         if (xSemaphoreTake(send_mutex_, portMAX_DELAY) == pdTRUE) {
             websocket_ = nullptr;
@@ -308,6 +322,10 @@ void TalkNestClient::manager_loop()
         }
         audio_.cancel_playback();
         audio_.clear_upstream();
+        /* The sender can observe connected_ as true one last time while the
+         * link is being torn down; clear its request so the rebuilt client is
+         * not immediately torn down again. */
+        reconnect_requested_.store(false);
     }
     xEventGroupSetBits(events_, MANAGER_STOPPED);
     vTaskDelete(nullptr);
@@ -316,9 +334,7 @@ void TalkNestClient::manager_loop()
 void TalkNestClient::sender_loop()
 {
     std::vector<int16_t> pcm(TALKNEST_PCM_FRAME_SAMPLES);
-    /* Keepalive is handled by the WebSocket client's protocol-level PING
-     * (with PONG and a liveness timeout). The old application-level "ping"
-     * JSON was redundant: its "pong" reply was never consumed here. */
+    uint32_t send_failures = 0;
     while (running_) {
         if (initial_messages_pending_.exchange(false) && connected_) {
             send_initial_messages();
@@ -331,7 +347,14 @@ void TalkNestClient::sender_loop()
             continue;
         }
         if (connected_ && audio_.upstream_allowed()) {
-            send_binary(pcm.data(), TALKNEST_PCM_FRAME_SAMPLES);
+            if (send_binary(pcm.data(), TALKNEST_PCM_FRAME_SAMPLES)) {
+                send_failures = 0;
+            } else if (++send_failures >= SEND_FAILURES_BEFORE_RECONNECT &&
+                       !reconnect_requested_.exchange(true)) {
+                ESP_LOGW(TAG, "Upstream writes failing; reconnecting");
+            }
+        } else {
+            send_failures = 0;
         }
     }
     xEventGroupSetBits(events_, SENDER_STOPPED);
@@ -438,18 +461,21 @@ void TalkNestClient::send_playback_ended(uint32_t position_ms,
     cJSON_free(serialized);
 }
 
-void TalkNestClient::send_binary(const int16_t *pcm, size_t sample_count)
+bool TalkNestClient::send_binary(const int16_t *pcm, size_t sample_count)
 {
     if (!connected_) {
-        return;
+        return false;
     }
+    bool sent = false;
     if (xSemaphoreTake(send_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (websocket_ != nullptr) {
-            esp_websocket_client_send_bin(websocket_, reinterpret_cast<const char *>(pcm),
-                                          sample_count * sizeof(int16_t), pdMS_TO_TICKS(100));
+            sent = esp_websocket_client_send_bin(
+                       websocket_, reinterpret_cast<const char *>(pcm),
+                       sample_count * sizeof(int16_t), pdMS_TO_TICKS(100)) >= 0;
         }
         xSemaphoreGive(send_mutex_);
     }
+    return sent;
 }
 
 void TalkNestClient::interrupt()
