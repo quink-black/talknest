@@ -27,6 +27,10 @@ INDEX_VERSION = 1
 AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 DEFAULT_SAMPLE_RATE = 24000
 PCM_CHUNK_MS = 100
+# Textbook recordings sit near -29 dBFS RMS with peaks around -5 dBFS, much
+# quieter than TTS speech. Normalize to broadcast loudness with a true-peak
+# limiter. loudnorm preserves the sample count, so position_ms stays exact.
+LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
 # Grace period after the stream ends for the device to report its exact
 # position. If no report arrives, the server clears the session itself.
 END_FALLBACK_S = 5.0
@@ -406,8 +410,8 @@ class TextbookPlayback:
         args = ["ffmpeg", "-v", "error"]
         if self.start_ms:
             args += ["-ss", f"{self.start_ms / 1000:.3f}"]
-        args += ["-i", str(self.entry.path), "-ar", str(rate), "-ac", "1",
-                 "-f", "s16le", "-"]
+        args += ["-i", str(self.entry.path), "-af", LOUDNORM,
+                 "-ar", str(rate), "-ac", "1", "-f", "s16le", "-"]
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE,
