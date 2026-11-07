@@ -15,6 +15,12 @@ FLAGS=(-std=c++17 -Wall -Wextra -Werror)
     "$ROOT/tests/test_avatar_logic.cpp" \
     "$ROOT/components/ui_avatar/avatar_logic.cpp" \
     -o "$BUILD_DIR/test_avatar_logic"
+"$CXX" "${FLAGS[@]}" -I"$ROOT/components/ui_avatar/include" \
+    -I"$ROOT/components/volume/include" \
+    "$ROOT/tests/test_volume.cpp" \
+    "$ROOT/components/ui_avatar/avatar_logic.cpp" \
+    -o "$BUILD_DIR/test_volume"
 "$BUILD_DIR/test_pcm_format"
 "$BUILD_DIR/test_profile_logic"
 "$BUILD_DIR/test_avatar_logic"
+"$BUILD_DIR/test_volume"

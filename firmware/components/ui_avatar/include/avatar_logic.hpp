@@ -53,6 +53,9 @@ Pose compute_pose(const PoseInput &in);
 constexpr uint32_t INTERRUPT_HOLD_MS = 600;
 constexpr int16_t TOUCH_EDGE_PX = 20;
 constexpr int16_t TOUCH_MOVE_CANCEL_PX = 24;
+/* Pixels of vertical travel per volume notch. A full-screen swipe therefore
+ * spans close to the whole 0-100 range at one notch per step. */
+constexpr int16_t VOLUME_SWIPE_STEP_PX = 24;
 
 enum class TouchEvent : uint8_t {
     Press,
@@ -88,5 +91,18 @@ struct TouchSample {
 
 TouchResult update_touch_gesture(TouchGesture &gesture, const TouchSample &sample);
 uint8_t touch_progress(const TouchGesture &gesture, uint32_t elapsed_ms);
+
+/* Vertical swipe for speaker volume, independent of the hold-to-interrupt
+ * gesture. `enabled` is the volume gesture's own arming flag: false during
+ * playback, where the interrupt gesture owns the touch. */
+struct VolumeSwipe {
+    bool active = false;
+    int16_t start_x = 0;
+    int16_t last_step_y = 0;
+};
+
+// Returns the signed number of volume notches produced by this sample:
+// positive for an upward swipe, negative for downward, zero otherwise.
+int update_volume_swipe(VolumeSwipe &swipe, const TouchSample &sample);
 
 } // namespace avatar_logic

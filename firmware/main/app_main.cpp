@@ -12,6 +12,7 @@
 #include "power_manager.hpp"
 #include "talknest_client.hpp"
 #include "ui_avatar.hpp"
+#include "volume.hpp"
 
 namespace {
 constexpr char TAG[] = "main";
@@ -56,6 +57,9 @@ void sleep_cycle()
         fatal_error("Audio resume failed", audio_result);
         return;
     }
+    // board_audio_open() re-applies the config default; restore the saved
+    // volume so a sleep/wake cycle does not silently reset the user's level.
+    volume::apply();
     esp_err_t client_result = client->start();
     if (client_result != ESP_OK) {
         fatal_error("Network resume failed", client_result);
@@ -79,7 +83,10 @@ extern "C" void app_main()
         result = nvs_flash_init();
     }
     ESP_ERROR_CHECK(result);
-    result = ui.initialize([]() { client->interrupt(); });
+    result = ui.initialize(
+        []() { client->interrupt(); },
+        [](int steps) { return volume::change(steps); },
+        []() { volume::commit(); });
     if (result != ESP_OK) {
         fatal_error("Display init failed", result);
         return;
@@ -115,6 +122,8 @@ extern "C" void app_main()
         ESP_LOGW(TAG, "SD configuration not applied: %s", esp_err_to_name(result));
     }
     client->set_profile(config);
+    // Config supplies the factory default; a previously saved level wins.
+    volume::init(config.speaker_volume);
     ESP_LOGI(TAG, "Effective audio config: volume=%d mic_gain=%.1f capture_gain=%.1f prebuffer=%d",
              config.speaker_volume, config.mic_gain_db, config.capture_gain,
              config.playback_prebuffer_ms);
@@ -140,6 +149,7 @@ extern "C" void app_main()
         audio.stop();
         return;
     }
+    volume::apply();
     result = client->start();
     if (result != ESP_OK) {
         fatal_error("Network start failed", result);

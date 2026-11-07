@@ -1,5 +1,6 @@
 #include "ui_avatar.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 #include "avatar_frames.h"
@@ -60,11 +61,15 @@ UiAvatar::UiAvatar(std::function<void()> interrupt_callback)
 {
 }
 
-esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback)
+esp_err_t UiAvatar::initialize(std::function<void()> interrupt_callback,
+                              std::function<int(int)> volume_change_callback,
+                              std::function<void()> volume_commit_callback)
 {
     if (interrupt_callback) {
         interrupt_callback_ = std::move(interrupt_callback);
     }
+    volume_change_callback_ = std::move(volume_change_callback);
+    volume_commit_callback_ = std::move(volume_commit_callback);
     if (bsp_display_start() == nullptr) {
         ESP_LOGE(TAG, "Display initialization failed");
         return ESP_FAIL;
@@ -284,6 +289,9 @@ void UiAvatar::apply_events()
         interrupt_latched_ = false;
     }
     can_interrupt_ = interrupt_window && !interrupt_latched_;
+    // Volume is adjustable outside playback only; the two windows are
+    // complementary so a press can never drive both gestures.
+    volume_window_ = !interrupt_window;
     update_gesture(avatar_logic::TouchEvent::Tick, gesture_.x, gesture_.y);
 
     if (error_pending_.exchange(false, std::memory_order_acquire)) {
@@ -291,11 +299,21 @@ void UiAvatar::apply_events()
         lv_obj_set_hidden(message_label_, false);
         lv_obj_set_hidden(hint_label_, true);
         message_until_ms_ = now_ms_ + MESSAGE_MS;
-    } else if (message_until_ms_ != 0 && now_ms_ >= message_until_ms_) {
-        message_until_ms_ = 0;
-        lv_label_set_text(message_label_, "");
-        lv_obj_set_hidden(message_label_, true);
-        lv_obj_set_hidden(hint_label_, false);
+    } else {
+        const int volume = volume_display_.exchange(-1, std::memory_order_acquire);
+        if (volume >= 0) {
+            char text[16];
+            std::snprintf(text, sizeof(text), "VOL %d", volume);
+            lv_label_set_text(message_label_, text);
+            lv_obj_set_hidden(message_label_, false);
+            lv_obj_set_hidden(hint_label_, true);
+            message_until_ms_ = now_ms_ + MESSAGE_MS;
+        } else if (message_until_ms_ != 0 && now_ms_ >= message_until_ms_) {
+            message_until_ms_ = 0;
+            lv_label_set_text(message_label_, "");
+            lv_obj_set_hidden(message_label_, true);
+            lv_obj_set_hidden(hint_label_, false);
+        }
     }
 
     if (visible_state_ != static_cast<int>(state)) {
@@ -528,14 +546,30 @@ void UiAvatar::on_timer(lv_timer_t *timer)
 
 void UiAvatar::update_gesture(avatar_logic::TouchEvent event, int16_t x, int16_t y)
 {
-    const avatar_logic::TouchSample sample = {
+    const avatar_logic::TouchSample interrupt_sample = {
         event, x, y, now_ms_, can_interrupt_, SCREEN_W, SCREEN_H,
     };
-    if (avatar_logic::update_touch_gesture(gesture_, sample) !=
-        avatar_logic::TouchResult::Interrupt) {
-        return;
+    const bool interrupted =
+        avatar_logic::update_touch_gesture(gesture_, interrupt_sample) ==
+        avatar_logic::TouchResult::Interrupt;
+
+    // A separate sample arms the volume swipe in the opposite window, so the
+    // two gestures never see the same press as active.
+    const avatar_logic::TouchSample volume_sample = {
+        event, x, y, now_ms_, volume_window_, SCREEN_W, SCREEN_H,
+    };
+    const int steps = avatar_logic::update_volume_swipe(volume_swipe_, volume_sample);
+    if (steps != 0 && volume_change_callback_) {
+        volume_display_.store(volume_change_callback_(steps),
+                              std::memory_order_release);
+    }
+    if (event == avatar_logic::TouchEvent::Release && volume_commit_callback_) {
+        volume_commit_callback_();
     }
 
+    if (!interrupted) {
+        return;
+    }
     interrupt_latched_ = true;
     can_interrupt_ = false;
     tap_until_ms_ = now_ms_ + TAP_MS;

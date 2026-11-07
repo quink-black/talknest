@@ -166,4 +166,49 @@ uint8_t touch_progress(const TouchGesture &gesture, uint32_t elapsed_ms)
     return static_cast<uint8_t>(elapsed * 255 / INTERRUPT_HOLD_MS);
 }
 
+int update_volume_swipe(VolumeSwipe &swipe, const TouchSample &sample)
+{
+    // Playback owns the touch. Cancel any swipe that straddles the transition
+    // so the volume and interrupt gestures can never both be active.
+    if (!sample.enabled) {
+        swipe = {};
+        return 0;
+    }
+    // Timer ticks carry the interrupt gesture's stale coordinates. They must
+    // neither emit a notch nor disturb a swipe that is still in progress.
+    if (sample.event == TouchEvent::Tick) {
+        return 0;
+    }
+    if (sample.event == TouchEvent::Press) {
+        const bool inside = sample.x >= TOUCH_EDGE_PX &&
+                            sample.y >= TOUCH_EDGE_PX &&
+                            sample.x < sample.screen_width - TOUCH_EDGE_PX &&
+                            sample.y < sample.screen_height - TOUCH_EDGE_PX;
+        swipe = {};
+        swipe.active = inside;
+        swipe.start_x = sample.x;
+        swipe.last_step_y = sample.y;
+        return 0;
+    }
+    if (sample.event == TouchEvent::Release || !swipe.active) {
+        swipe = {};
+        return 0;
+    }
+
+    // A move only counts while the finger stays roughly in the same vertical
+    // band; large horizontal drift belongs to a different gesture.
+    const int32_t dx = static_cast<int32_t>(sample.x) - swipe.start_x;
+    if (dx > TOUCH_MOVE_CANCEL_PX || dx < -TOUCH_MOVE_CANCEL_PX) {
+        swipe = {};
+        return 0;
+    }
+    const int32_t travelled = swipe.last_step_y - sample.y;  // up = positive
+    const int steps = travelled / VOLUME_SWIPE_STEP_PX;
+    if (steps == 0) {
+        return 0;
+    }
+    swipe.last_step_y -= steps * VOLUME_SWIPE_STEP_PX;
+    return steps;
+}
+
 } // namespace avatar_logic

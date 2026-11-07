@@ -20,7 +20,10 @@ class UiAvatar {
 public:
     explicit UiAvatar(std::function<void()> interrupt_callback = {});
 
-    esp_err_t initialize(std::function<void()> interrupt_callback = {});
+    esp_err_t initialize(
+        std::function<void()> interrupt_callback = {},
+        std::function<int(int)> volume_change_callback = {},
+        std::function<void()> volume_commit_callback = {});
     void set_state(const char *state);
     void set_envelope(uint8_t rms)
     {
@@ -41,6 +44,8 @@ private:
      * normal playback_finished (cancel, disconnect, sleep). */
 
     std::function<void()> interrupt_callback_;
+    std::function<int(int)> volume_change_callback_;
+    std::function<void()> volume_commit_callback_;
     lv_obj_t *image_ = nullptr;
     lv_obj_t *status_panel_ = nullptr;
     lv_obj_t *status_label_ = nullptr;
@@ -60,6 +65,9 @@ private:
     std::atomic<bool> playing_{false};
     char error_text_[TEXT_SIZE] = {};
     std::atomic<bool> error_pending_{false};
+    // Set by the touch event (any task), consumed by the LVGL timer. -1 means
+    // no pending volume to display.
+    std::atomic<int> volume_display_{-1};
 
     // LVGL-task-only state. All deadlines are lv_tick_get() milliseconds.
     uint32_t now_ms_ = 0;
@@ -73,7 +81,9 @@ private:
     int current_frame_ = -1;
     int visible_state_ = -1;
     avatar_logic::TouchGesture gesture_{};
+    avatar_logic::VolumeSwipe volume_swipe_{};
     bool can_interrupt_ = false;
+    bool volume_window_ = false;
     bool interrupt_latched_ = false;
     bool display_locked_ = false;
     bool hearing_active_ = false;

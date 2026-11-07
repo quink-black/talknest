@@ -162,6 +162,18 @@ esp_err_t board_audio_initialize()
     return ESP_OK;
 }
 
+esp_err_t board_audio_set_volume(int volume)
+{
+    ESP_RETURN_ON_FALSE(speaker != nullptr, ESP_ERR_INVALID_STATE, TAG,
+                        "Speaker is not initialized");
+    if (volume < 0) {
+        volume = 0;
+    } else if (volume > 100) {
+        volume = 100;
+    }
+    return esp_codec_dev_set_out_vol(speaker, volume);
+}
+
 esp_err_t board_audio_open(int speaker_volume, float mic_gain_db)
 {
     ESP_RETURN_ON_FALSE(speaker != nullptr && microphone != nullptr,
@@ -186,7 +198,7 @@ esp_err_t board_audio_open(int speaker_volume, float mic_gain_db)
     };
     ESP_RETURN_ON_ERROR(esp_codec_dev_open(speaker, &output), TAG, "Open speaker failed");
     ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_mute(speaker, false), TAG, "Unmute speaker failed");
-    ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(speaker, speaker_volume),
+    ESP_RETURN_ON_ERROR(board_audio_set_volume(speaker_volume),
                         TAG, "Set speaker volume failed");
     ESP_RETURN_ON_ERROR(esp_codec_dev_open(microphone, &input), TAG, "Open microphone failed");
     ESP_RETURN_ON_ERROR(esp_codec_dev_set_in_channel_gain(
