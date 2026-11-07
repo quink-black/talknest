@@ -316,7 +316,9 @@ void TalkNestClient::manager_loop()
 void TalkNestClient::sender_loop()
 {
     std::vector<int16_t> pcm(TALKNEST_PCM_FRAME_SAMPLES);
-    TickType_t last_ping = xTaskGetTickCount();
+    /* Keepalive is handled by the WebSocket client's protocol-level PING
+     * (with PONG and a liveness timeout). The old application-level "ping"
+     * JSON was redundant: its "pong" reply was never consumed here. */
     while (running_) {
         if (initial_messages_pending_.exchange(false) && connected_) {
             send_initial_messages();
@@ -324,10 +326,6 @@ void TalkNestClient::sender_loop()
         if (playback_ended_pending_.exchange(false) && connected_) {
             send_playback_ended(playback_ended_position_ms_.load(),
                                 playback_ended_id_.load());
-        }
-        if (xTaskGetTickCount() - last_ping >= pdMS_TO_TICKS(15000)) {
-            send_json("ping");
-            last_ping = xTaskGetTickCount();
         }
         if (!audio_.read_upstream(pcm.data(), pdMS_TO_TICKS(100))) {
             continue;

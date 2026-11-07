@@ -102,8 +102,12 @@ esp_err_t AudioPipeline::start()
     if (result != ESP_OK) {
         return result;
     }
+    /* Opening the codec powers the class-D amplifier. Nothing is playing at
+     * start-up, so gate it until begin_playback() enables it. */
+    board_audio_set_speaker_enabled(false);
 
     upstream_buffer_ = xStreamBufferCreate(UPSTREAM_BUFFER_BYTES, 1);
+    upstream_ready_ = xSemaphoreCreateBinary();
     playback_buffer_storage_ = static_cast<uint8_t *>(heap_caps_malloc(
         PLAYBACK_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     playback_buffer_struct_ = static_cast<StaticStreamBuffer_t *>(heap_caps_calloc(
@@ -116,7 +120,8 @@ esp_err_t AudioPipeline::start()
     playback_mutex_ = xSemaphoreCreateMutex();
     stopped_events_ = xEventGroupCreate();
     if (upstream_buffer_ == nullptr || playback_buffer_ == nullptr ||
-        upstream_mutex_ == nullptr || playback_mutex_ == nullptr || stopped_events_ == nullptr) {
+        upstream_mutex_ == nullptr || upstream_ready_ == nullptr ||
+        playback_mutex_ == nullptr || stopped_events_ == nullptr) {
         ESP_LOGE(TAG, "Audio buffer allocation failed");
         stop();
         return ESP_ERR_NO_MEM;
@@ -182,6 +187,10 @@ void AudioPipeline::stop()
         vSemaphoreDelete(upstream_mutex_);
         upstream_mutex_ = nullptr;
     }
+    if (upstream_ready_ != nullptr) {
+        vSemaphoreDelete(upstream_ready_);
+        upstream_ready_ = nullptr;
+    }
     if (playback_mutex_ != nullptr) {
         vSemaphoreDelete(playback_mutex_);
         playback_mutex_ = nullptr;
@@ -192,20 +201,25 @@ bool AudioPipeline::read_upstream(int16_t *pcm, TickType_t timeout)
 {
     const size_t expected = TALKNEST_PCM_FRAME_SAMPLES * sizeof(int16_t);
     TickType_t started = xTaskGetTickCount();
-    while (running_ && upstream_buffer_ != nullptr) {
+    while (running_ && upstream_buffer_ != nullptr && upstream_ready_ != nullptr) {
+        // Fast path: a frame may already be queued from an earlier wake-up.
         if (xSemaphoreTake(upstream_mutex_, portMAX_DELAY) == pdTRUE) {
-            bool complete = xStreamBufferBytesAvailable(upstream_buffer_) >= expected;
-            size_t received = complete ?
+            const bool complete =
+                xStreamBufferBytesAvailable(upstream_buffer_) >= expected;
+            const size_t received = complete ?
                 xStreamBufferReceive(upstream_buffer_, pcm, expected, 0) : 0;
             xSemaphoreGive(upstream_mutex_);
             if (received == expected) {
                 return true;
             }
         }
-        if (xTaskGetTickCount() - started >= timeout) {
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+        if (elapsed >= timeout) {
             return false;
         }
-        vTaskDelay(1);
+        // Block until the capture task writes another frame, or the
+        // caller's deadline expires. No periodic wake-ups in between.
+        xSemaphoreTake(upstream_ready_, timeout - elapsed);
     }
     return false;
 }
@@ -314,9 +328,12 @@ void AudioPipeline::capture_loop()
             mono[frame] = pcm_format::scale_sample(
                 pcm_format::mix_tdm_microphones(captured.data(), frame), config_.capture_gain);
         }
-        send_stream(upstream_buffer_, upstream_mutex_,
-                    reinterpret_cast<const uint8_t *>(mono.data()),
-                    mono.size() * sizeof(int16_t));
+        if (send_stream(upstream_buffer_, upstream_mutex_,
+                        reinterpret_cast<const uint8_t *>(mono.data()),
+                        mono.size() * sizeof(int16_t)) &&
+            upstream_ready_ != nullptr) {
+            xSemaphoreGive(upstream_ready_);
+        }
     }
     xEventGroupSetBits(stopped_events_, CAPTURE_STOPPED);
     vTaskDelete(nullptr);
@@ -328,10 +345,22 @@ void AudioPipeline::playback_loop()
     std::array<int16_t, PLAYBACK_BLOCK_SAMPLES * BOARD_AUDIO_PLAYBACK_CHANNELS> stereo;
     uint32_t underruns = 0;
     TickType_t last_report = xTaskGetTickCount();
+    /* This task is the only writer to the speaker, so it owns the amplifier
+     * power state. Enable it when a turn starts (before the prebuffer wait,
+     * so the amp has time to settle) and gate it again while idle. */
+    bool speaker_on = false;
     while (running_) {
         if (!playback_active_) {
+            if (speaker_on) {
+                board_audio_set_speaker_enabled(false);
+                speaker_on = false;
+            }
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
+        }
+        if (!speaker_on) {
+            board_audio_set_speaker_enabled(true);
+            speaker_on = true;
         }
         const size_t block_bytes = mono.size() * sizeof(int16_t);
         uint32_t generation = playback_generation_.load();
@@ -417,6 +446,9 @@ void AudioPipeline::playback_loop()
             xTaskGetTickCount() - last_playback_write_ >= PLAYBACK_TAIL) {
             finish_playback(generation);
         }
+    }
+    if (speaker_on) {
+        board_audio_set_speaker_enabled(false);
     }
     xEventGroupSetBits(stopped_events_, PLAYBACK_STOPPED);
     vTaskDelete(nullptr);

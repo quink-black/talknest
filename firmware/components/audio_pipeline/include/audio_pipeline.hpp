@@ -68,6 +68,7 @@ private:
     StaticStreamBuffer_t *playback_buffer_struct_ = nullptr;
     uint8_t *playback_buffer_storage_ = nullptr;
     SemaphoreHandle_t upstream_mutex_ = nullptr;
+    SemaphoreHandle_t upstream_ready_ = nullptr;
     SemaphoreHandle_t playback_mutex_ = nullptr;
     EventGroupHandle_t stopped_events_ = nullptr;
     TaskHandle_t capture_task_ = nullptr;

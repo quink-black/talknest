@@ -39,3 +39,14 @@ CONFIG_LV_BUILD_EXAMPLES=n
 
 CONFIG_BSP_I2C_CLK_SPEED_HZ=400000
 CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+
+# Enable DFS so the CPU runs at the lowest frequency the active peripheral
+# locks allow. Automatic light sleep stays off: the always-on audio and LVGL
+# timers leave no idle window long enough to amortise the wake-up cost.
+CONFIG_PM_ENABLE=y
+CONFIG_PM_DFS_INIT_AUTO=y
+
+# Cap Wi-Fi transmit power for a short-range local link. This lowers PA
+# current without touching the protocol. Check the associated AP RSSI before
+# reducing this further.
+CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=17
