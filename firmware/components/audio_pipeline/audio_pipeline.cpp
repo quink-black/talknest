@@ -102,9 +102,6 @@ esp_err_t AudioPipeline::start()
     if (result != ESP_OK) {
         return result;
     }
-    /* Opening the codec powers the class-D amplifier. Nothing is playing at
-     * start-up, so gate it until begin_playback() enables it. */
-    board_audio_set_speaker_enabled(false);
 
     upstream_buffer_ = xStreamBufferCreate(UPSTREAM_BUFFER_BYTES, 1);
     upstream_ready_ = xSemaphoreCreateBinary();
@@ -345,22 +342,10 @@ void AudioPipeline::playback_loop()
     std::array<int16_t, PLAYBACK_BLOCK_SAMPLES * BOARD_AUDIO_PLAYBACK_CHANNELS> stereo;
     uint32_t underruns = 0;
     TickType_t last_report = xTaskGetTickCount();
-    /* This task is the only writer to the speaker, so it owns the amplifier
-     * power state. Enable it when a turn starts (before the prebuffer wait,
-     * so the amp has time to settle) and gate it again while idle. */
-    bool speaker_on = false;
     while (running_) {
         if (!playback_active_) {
-            if (speaker_on) {
-                board_audio_set_speaker_enabled(false);
-                speaker_on = false;
-            }
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
-        }
-        if (!speaker_on) {
-            board_audio_set_speaker_enabled(true);
-            speaker_on = true;
         }
         const size_t block_bytes = mono.size() * sizeof(int16_t);
         uint32_t generation = playback_generation_.load();
@@ -446,9 +431,6 @@ void AudioPipeline::playback_loop()
             xTaskGetTickCount() - last_playback_write_ >= PLAYBACK_TAIL) {
             finish_playback(generation);
         }
-    }
-    if (speaker_on) {
-        board_audio_set_speaker_enabled(false);
     }
     xEventGroupSetBits(stopped_events_, PLAYBACK_STOPPED);
     vTaskDelete(nullptr);

@@ -1,7 +1,6 @@
 #include "board_audio.hpp"
 
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
-#include "driver/gpio.h"
 #include "driver/i2s_tdm.h"
 #include "esp_check.h"
 #include "esp_codec_dev_defaults.h"
@@ -161,14 +160,6 @@ esp_err_t board_audio_initialize()
     ESP_RETURN_ON_ERROR(initialize_speaker(), TAG, "Initialize speaker failed");
     ESP_RETURN_ON_ERROR(initialize_microphone(), TAG, "Initialize microphone failed");
     return ESP_OK;
-}
-
-void board_audio_set_speaker_enabled(bool enabled)
-{
-    /* Only the external class-D amplifier is gated. The ES8311 and the I2S
-     * stream stay in the state board_audio_open() left them, so the capture
-     * path (including the ES8311 loopback slot) is untouched. */
-    gpio_set_level(BSP_POWER_AMP_IO, enabled ? 1 : 0);
 }
 
 esp_err_t board_audio_open(int speaker_volume, float mic_gain_db)
