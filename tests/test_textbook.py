@@ -382,3 +382,76 @@ def test_sample_rate_is_clamped_to_device_rate():
     library = textbook.TextbookLibrary(
         {"textbook": {"sample_rate": 48000}})
     assert library.sample_rate == textbook.DEFAULT_SAMPLE_RATE == 24000
+
+
+def test_system_prompt_repeats_playback_rule_at_both_ends():
+    sess = SimpleNamespace(system_prompt=lambda: "tutor rules")
+    prompt = main.system_prompt(sess)
+    assert prompt.startswith(main.TEXTBOOK_RULE)
+    assert prompt.endswith(main.TEXTBOOK_RULE)
+    assert "家长" in main.TEXTBOOK_RULE
+    assert main.PARENT_PREFIX not in main.TEXTBOOK_RULE
+
+
+def test_playback_claim_detects_dropped_tool_replies():
+    assert main.playback_claim("好的，正在为您播放第一单元的课文。")
+    assert main.playback_claim("已经停止播放了。")
+    assert main.playback_claim("我们从头再听一遍吧")
+
+
+def test_playback_claim_ignores_ordinary_replies():
+    assert not main.playback_claim("Apple 是苹果，跟我读一次好吗？")
+    assert not main.playback_claim("好呀，我们聊聊小狗吧。")
+
+
+class _IntentDouble:
+    supports_tools = True
+
+    def __init__(self, result=None, raises=False):
+        self.result = result
+        self.raises = raises
+        self.calls = 0
+
+    async def decide_tool(self, messages, tools, name, max_tokens=64):
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("backend down")
+        return self.result
+
+
+def test_recover_playback_call_returns_a_play_textbook_call(monkeypatch):
+    monkeypatch.setattr(main, "TEXTBOOK", SimpleNamespace(enabled=True))
+    double = _IntentDouble(
+        ToolCall("play_intent", {"action": "play", "unit": 1}))
+    monkeypatch.setattr(main, "llm_client", lambda: double)
+    call = asyncio.run(main.recover_playback_call(
+        "播放第一单元课文", None, "好的，正在为您播放第一单元的课文。"))
+    assert call.name == "play_textbook"
+    assert call.arguments == {"action": "play", "unit": 1}
+    assert double.calls == 1
+
+
+def test_recover_playback_call_keeps_ordinary_turns(monkeypatch):
+    monkeypatch.setattr(main, "TEXTBOOK", SimpleNamespace(enabled=True))
+    double = _IntentDouble(
+        ToolCall("play_intent", {"action": "play", "unit": 1}))
+    monkeypatch.setattr(main, "llm_client", lambda: double)
+    assert asyncio.run(main.recover_playback_call(
+        "我们聊聊小狗吧", None, "好呀，小狗很可爱。")) is None
+    assert double.calls == 0
+
+
+def test_recover_playback_call_ignores_none_decision(monkeypatch):
+    monkeypatch.setattr(main, "TEXTBOOK", SimpleNamespace(enabled=True))
+    double = _IntentDouble(ToolCall("play_intent", {"action": "none"}))
+    monkeypatch.setattr(main, "llm_client", lambda: double)
+    assert asyncio.run(main.recover_playback_call(
+        "再听一遍刚才的话", None, "好，我们再听一遍这个单元。")) is None
+
+
+def test_recover_playback_call_survives_backend_failure(monkeypatch):
+    monkeypatch.setattr(main, "TEXTBOOK", SimpleNamespace(enabled=True))
+    double = _IntentDouble(raises=True)
+    monkeypatch.setattr(main, "llm_client", lambda: double)
+    assert asyncio.run(main.recover_playback_call(
+        "播放第一单元课文", None, "正在播放课文。")) is None

@@ -82,6 +82,43 @@ class LLMClient:
         async for event in self._stream(messages, cancel, max_tokens, None):
             yield event
 
+    async def decide_tool(self, messages: list[dict], tools: list[dict],
+                          name: str, max_tokens: int = 64) -> ToolCall | None:
+        """Resolve one intent with a forced, non-streaming tool call.
+
+        ``tool_choice`` pins the backend to a single named function and greedy
+        decoding, so the answer is a parsed argument dict rather than prose.
+        A backend that ignores the constraint still returns ``None``, which
+        leaves the caller's original reply untouched.
+        """
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "tools": tools,
+            "tool_choice": {"type": "function", "function": {"name": name}},
+        }
+        body.update(self.extra_body)
+        resp = await self._client.post(
+            f"{self.base_url}/chat/completions", json=body,
+            headers=self.headers)
+        resp.raise_for_status()
+        try:
+            message = resp.json()["choices"][0]["message"]
+        except (KeyError, IndexError, ValueError):
+            return None
+        calls = message.get("tool_calls") or []
+        if not calls:
+            return None
+        fn = calls[0].get("function") or {}
+        try:
+            arguments = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return ToolCall(fn.get("name") or name, arguments)
+
     async def _stream(
         self, messages: list[dict], cancel: asyncio.Event | None,
         max_tokens: int | None, tools: list[dict] | None,

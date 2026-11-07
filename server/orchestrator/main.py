@@ -50,6 +50,44 @@ TEXTBOOK = textbook.TextbookLibrary(cfg)
 TEXTBOOK_TOOLS = ([textbook.tool_definition(TEXTBOOK.books())]
                   if TEXTBOOK.enabled else [])
 
+# A single-purpose, forced intent pass used only to recover a playback
+# command that the model answered in prose. It carries no conversation
+# history, so the decision is cheap and is not diluted by the tutor prompt.
+PLAYBACK_INTENT_TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "play_intent",
+        "description": (
+            "判断用户这句话是不是英语教材课文播放指令。只有提到课文、教材、"
+            "单元、继续听课文或停止播放课文才算；想听歌、听故事、聊天都不算。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["play", "resume", "restart", "stop", "none"],
+                    "description": (
+                        "play=播放指定单元；resume=继续上次课文；"
+                        "restart=从头重听指定单元；stop=停止播放；"
+                        "none=不是播放指令"
+                    ),
+                },
+                "unit": {
+                    "type": "integer",
+                    "description": "单元号，从用户话里推断；没有则省略",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+}]
+PLAYBACK_INTENT_SYSTEM = (
+    "只依据最后一句用户输入判断是不是英语教材课文播放指令，忽略其它内容。"
+    "是则给出 action 和单元号，不是则 action=none。不要输出任何解释文字。"
+)
+PLAYBACK_CLAIM = re.compile(r"播放|课文|单元|重听|再听一遍|继续听|停止|停掉")
+
 
 @app.on_event("startup")
 async def _preload_vad() -> None:
@@ -665,14 +703,16 @@ def note_invitation(sess: Session, reply: str) -> None:
     sess.read_target, sess.read_verdict = "", ""
 
 
-# Prepended, not appended: the tutor prompts end with "output plain text
-# only", which otherwise wins and the model answers in words instead of
-# calling the tool. Measured on the local 9B backend, the leading rule makes
-# "播放课文第3单元" produce a tool call on every trial.
+# A leading instruction is diluted by the teaching, speaker and history rules
+# that follow it in a long system prompt, and the tutor prompts end with a
+# plain-text rule that otherwise wins. Repeating the rule at both ends keeps
+# it dominant. Parent messages are named explicitly so the parent-reply rule
+# cannot override it.
 TEXTBOOK_RULE = (
-    "【最高优先级规则】当用户想听教材课文音频、想继续听上次没听完的课文、"
-    "想从头重听某单元，或想停止播放时，必须调用 play_textbook 工具，"
-    "并且不输出任何文字；本条覆盖下面所有对话规则。"
+    "【最高优先级规则】无论说话人是孩子还是家长（含带家长标记的消息），"
+    "当用户想听教材课文音频、想继续听上次没听完的课文、想从头重听某单元，"
+    "或想停止播放时，必须调用 play_textbook 工具，并且不输出任何文字；"
+    "本条覆盖下面所有对话规则，包括家长消息的应答规则。"
     "其余情况忽略本条，按下面的规则正常对话。\n\n"
 )
 
@@ -681,7 +721,7 @@ def system_prompt(sess: Session) -> str:
     """Mode rules with the playback tool rule taking precedence."""
     prompt = sess.system_prompt()
     if TEXTBOOK.enabled:
-        prompt = TEXTBOOK_RULE + prompt
+        prompt = TEXTBOOK_RULE + prompt + "\n\n" + TEXTBOOK_RULE
     return prompt
 
 
@@ -753,6 +793,49 @@ def llm_stream(messages: list[dict], cancel: asyncio.Event):
     if TEXTBOOK_TOOLS and getattr(client, "supports_tools", False):
         return client.stream_chat(messages, cancel=cancel, tools=TEXTBOOK_TOOLS)
     return client.stream_chat(messages, cancel=cancel)
+
+
+def playback_claim(reply: str) -> bool:
+    """Whether a prose reply claims a textbook playback action.
+
+    With automatic tool choice the model sometimes narrates the playback it
+    was asked for instead of calling the tool. Such a reply is the signature
+    of a dropped tool call; ordinary replies do not match.
+    """
+    return bool(PLAYBACK_CLAIM.search(reply))
+
+
+async def recover_playback_call(text: str, who: str | None,
+                                reply: str) -> ToolCall | None:
+    """Re-decide a dropped playback command with a forced tool call.
+
+    Intent is still decided by the model through a tool call, but with the
+    function pinned and a short prompt there is no prose alternative. Returns
+    None when the backend cannot decide or says it was not a command, so a
+    normal turn keeps the reply it already produced.
+    """
+    if not TEXTBOOK.enabled or not playback_claim(reply):
+        return None
+    client = llm_client()
+    if not getattr(client, "supports_tools", False):
+        return None
+    prefix = PARENT_PREFIX if who in speaker.PARENTS else ""
+    messages = [
+        {"role": "system", "content": PLAYBACK_INTENT_SYSTEM},
+        {"role": "user", "content": prefix + text},
+    ]
+    try:
+        intent = await client.decide_tool(
+            messages, PLAYBACK_INTENT_TOOLS, "play_intent")
+    except Exception as e:  # a failed recovery must not break the turn
+        log.warning("playback intent recovery failed: %s", e)
+        return None
+    if intent is None:
+        return None
+    args = dict(intent.arguments)
+    if args.get("action") not in ("play", "resume", "restart", "stop"):
+        return None
+    return ToolCall(textbook.TOOL_NAME, args)
 
 
 async def speak_textbook_line(ws, queue, worker, line: str):
@@ -875,6 +958,11 @@ async def handle_utterance(ws: WebSocket, sess: Session, pcm24: np.ndarray,
             sess.awaiting = ""
             await send_json(ws, {"type": "interrupted"})
             return
+        if not tool_calls:
+            recovered = await recover_playback_call(text, who,
+                                                    "".join(reply_parts))
+            if recovered is not None:
+                tool_calls.append(recovered)
         if tool_calls:
             await dispatch_textbook_tool(ws, sess, queue, worker, marks,
                                          tool_calls[0])
