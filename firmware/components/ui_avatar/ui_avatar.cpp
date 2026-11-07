@@ -419,7 +419,10 @@ void UiAvatar::apply_activity(avatar_logic::State state, uint8_t rms)
 
     for (int i = 0; i < 3; ++i) {
         lv_obj_set_height(activity_[i], heights[i]);
-        lv_obj_set_style_bg_opa(activity_[i], opacities[i], LV_PART_MAIN);
+        if (activity_opacity_[i] != opacities[i]) {
+            lv_obj_set_style_bg_opa(activity_[i], opacities[i], LV_PART_MAIN);
+            activity_opacity_[i] = opacities[i];
+        }
     }
 }
 
@@ -492,8 +495,19 @@ void UiAvatar::apply_pose(int32_t scale_y, int32_t dx, int32_t dy)
     } else {
         tap_until_ms_ = 0;
     }
-    lv_obj_set_style_translate_x(image_, dx, LV_PART_MAIN);
-    lv_obj_set_style_translate_y(image_, float_y, LV_PART_MAIN);
+    // lv_obj_set_style_translate_* invalidates the whole image on every call,
+    // including a no-op write. The breathing pose only changes a few times a
+    // second, so write only on a real change to keep the QSPI refresh load
+    // proportional to the visible animation.
+    if (!pose_applied_ || pose_dx_ != dx) {
+        lv_obj_set_style_translate_x(image_, dx, LV_PART_MAIN);
+        pose_dx_ = dx;
+    }
+    if (!pose_applied_ || pose_float_y_ != float_y) {
+        lv_obj_set_style_translate_y(image_, float_y, LV_PART_MAIN);
+        pose_float_y_ = float_y;
+    }
+    pose_applied_ = true;
 }
 
 void UiAvatar::on_timer(lv_timer_t *timer)

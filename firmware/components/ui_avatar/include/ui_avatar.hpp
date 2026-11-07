@@ -80,6 +80,13 @@ private:
     uint32_t last_activity_ms_ = 0;
     int current_frame_ = -1;
     int visible_state_ = -1;
+    // Last pose written to the image. A style setter invalidates the whole
+    // image even when the value is unchanged, so skip writes that do nothing.
+    int32_t pose_dx_ = 0;
+    int32_t pose_float_y_ = 0;
+    bool pose_applied_ = false;
+    // Same guard for the three activity dots' opacity.
+    lv_opa_t activity_opacity_[3] = {};
     avatar_logic::TouchGesture gesture_{};
     avatar_logic::VolumeSwipe volume_swipe_{};
     bool can_interrupt_ = false;
