@@ -6,7 +6,11 @@
 
 namespace {
 constexpr gpio_num_t POWER_BUTTON = GPIO_NUM_10;
+constexpr uint32_t SAMPLE_MS = 20;
+constexpr uint8_t DEBOUNCE_SAMPLES = 3;
+constexpr uint32_t MIN_PRESS_MS = 50;
 constexpr uint32_t LONG_PRESS_MS = 2000;
+constexpr char TAG[] = "power";
 }
 
 esp_err_t PowerManager::initialize(std::function<void()> sleep_callback)
@@ -29,21 +33,34 @@ esp_err_t PowerManager::initialize(std::function<void()> sleep_callback)
 
 void PowerManager::button_loop()
 {
-    bool was_pressed = false;
+    /* A mechanical button bounces for a few milliseconds. Accepting the
+     * first sample of a transition made sleep depend on where the poll
+     * landed inside the bounce, so only a level held for several samples
+     * counts as a press or a release. */
+    bool stable_pressed = false;
+    uint8_t same_samples = 0;
     TickType_t pressed_at = 0;
     while (true) {
-        bool pressed = gpio_get_level(POWER_BUTTON) != 0;
-        if (pressed && !was_pressed) {
-            pressed_at = xTaskGetTickCount();
-        }
-        if (!pressed && was_pressed && sleep_callback_) {
-            uint32_t held_ms = pdTICKS_TO_MS(xTaskGetTickCount() - pressed_at);
-            if (held_ms >= 40 && held_ms < LONG_PRESS_MS) {
-                sleep_callback_();
+        bool raw_pressed = gpio_get_level(POWER_BUTTON) != 0;
+        if (raw_pressed == stable_pressed) {
+            same_samples = 0;
+        } else if (++same_samples >= DEBOUNCE_SAMPLES) {
+            stable_pressed = raw_pressed;
+            same_samples = 0;
+            if (stable_pressed) {
+                pressed_at = xTaskGetTickCount();
+            } else {
+                uint32_t held_ms = pdTICKS_TO_MS(xTaskGetTickCount() - pressed_at);
+                if (held_ms >= MIN_PRESS_MS && held_ms < LONG_PRESS_MS) {
+                    if (sleep_callback_) {
+                        sleep_callback_();
+                    }
+                } else {
+                    ESP_LOGW(TAG, "PWR held %u ms, ignored", held_ms);
+                }
             }
         }
-        was_pressed = pressed;
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));
     }
 }
 

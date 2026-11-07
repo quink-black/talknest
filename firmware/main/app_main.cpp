@@ -27,7 +27,17 @@ void fatal_error(const char *stage, esp_err_t error);
 
 void wait_for_power_button_release()
 {
-    while (gpio_get_level(GPIO_NUM_10) != 0) {
+    /* Require the line to stay low for several samples. A bounce right
+     * after release leaves it high at the moment the ext1 wake source is
+     * armed, which makes light sleep return ESP_ERR_SLEEP_REJECT and the
+     * press look like it was ignored. */
+    int stable_low = 0;
+    while (stable_low < 3) {
+        if (gpio_get_level(GPIO_NUM_10) == 0) {
+            ++stable_low;
+        } else {
+            stable_low = 0;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -41,12 +51,31 @@ void sleep_cycle()
     ui.suspend();
     ui.set_sleeping(true);
     wait_for_power_button_release();
-    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(1ULL << GPIO_NUM_10,
-                                                    ESP_EXT1_WAKEUP_ANY_HIGH));
-    esp_err_t sleep_result = esp_light_sleep_start();
-    esp_sleep_disable_ext1_wakeup_io(1ULL << GPIO_NUM_10);
+    /* ext1 does not make the IDF keep RTC_PERIPH powered, unlike ext0 and
+     * the GPIO wakeup sources. Without it the internal pull-down on the
+     * button line is lost in sleep, so the line floats high and ANY_HIGH
+     * wakes the chip again almost immediately. */
+    esp_err_t sleep_result = esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH,
+                                                 ESP_PD_OPTION_ON);
+    if (sleep_result == ESP_OK) {
+        sleep_result = esp_sleep_enable_ext1_wakeup_io(
+            1ULL << GPIO_NUM_10, ESP_EXT1_WAKEUP_ANY_HIGH);
+    }
+    if (sleep_result == ESP_OK) {
+        sleep_result = esp_light_sleep_start();
+        if (sleep_result == ESP_ERR_SLEEP_REJECT) {
+            /* The wake source was seen as active at entry, which is a level
+             * glitch rather than a held button: settle the line and retry
+             * instead of losing the press. */
+            ESP_LOGW(TAG, "Light sleep rejected, retrying after settle");
+            wait_for_power_button_release();
+            sleep_result = esp_light_sleep_start();
+        }
+        esp_sleep_disable_ext1_wakeup_io(1ULL << GPIO_NUM_10);
+    }
     if (sleep_result != ESP_OK) {
-        ESP_LOGW(TAG, "Light sleep failed: %s", esp_err_to_name(sleep_result));
+        ESP_LOGW(TAG, "Light sleep did not run: %s",
+                 esp_err_to_name(sleep_result));
     }
     wait_for_power_button_release();
     ui.set_sleeping(false);

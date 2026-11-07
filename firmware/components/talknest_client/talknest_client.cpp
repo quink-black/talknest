@@ -259,14 +259,21 @@ void TalkNestClient::manager_loop()
             continue;
         }
 
-        esp_sntp_config_t time_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-        esp_netif_sntp_init(&time_config);
-        esp_err_t time_result = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(TIME_WAIT_MS));
-        esp_netif_sntp_deinit();
-        if (time_result != ESP_OK) {
-            ui_.set_error("Time sync failed");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            continue;
+        /* The clock is only needed for certificate validation, and it
+         * survives light sleep in the RTC domain. Syncing on every reconnect
+         * waited up to TIME_WAIT_MS and blocked TalkNestClient::stop(), which
+         * runs on the power-button task, so a press during reconnect looked
+         * ignored. Sync once per boot. */
+        if (time(nullptr) < 1704067200) {  // before 2024-01-01
+            esp_sntp_config_t time_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+            esp_netif_sntp_init(&time_config);
+            esp_err_t time_result = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(TIME_WAIT_MS));
+            esp_netif_sntp_deinit();
+            if (time_result != ESP_OK) {
+                ui_.set_error("Time sync failed");
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                continue;
+            }
         }
         if (!running_) {
             break;
