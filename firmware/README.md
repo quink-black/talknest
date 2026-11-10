@@ -110,14 +110,21 @@ tests/run_host_tests.sh
 
 ## 烧录与日志
 
-以下命令会覆盖设备上的现有固件。执行前应确认已备份需要保留的内容。
+在仓库任意目录执行下面这条命令，即可完成增量构建与烧录：
 
 ```bash
-idf.py -p PORT flash
+scripts/flash_firmware.sh
+```
+
+脚本会自动激活 ESP-IDF 环境，串口路径与 IDF 环境入口由 `local.env` 提供，详见 `local.env.example`。也可以把串口路径作为第一个参数传入。烧录会覆盖设备上的现有固件，脚本不会先备份 Flash。
+
+监视器需要交互式终端：
+
+```bash
 idf.py -p PORT monitor
 ```
 
-将 `PORT` 替换为设备的串口路径。监视器需要交互式终端；如果只需要在脚本中采集日志，可以使用 pyserial 以设备实际配置的波特率读取串口。
+将 `PORT` 替换为设备的串口路径。如果只需要在脚本中采集日志，可以使用 pyserial 以设备实际配置的波特率读取串口。
 
 ## 交互方式
 
